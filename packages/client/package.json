@@ -18,7 +18,7 @@
   "homepage": "https://github.com/WuChenDi/fingerprintd/tree/main/packages/client#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WuChenDi/fingerprintd.git",
+    "url": "git+https://github.com/wuchendi/fingerprintd.git",
     "directory": "packages/client"
   },
   "bugs": {
