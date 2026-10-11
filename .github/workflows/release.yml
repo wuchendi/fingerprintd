@@ -1,9 +1,10 @@
 name: Release (npm + crates.io)
 
 # Publishes the browser SDK (`@cdlab/fingerprintd`, packages/client) to npm and
-# the Rust crates (`fingerprintd-core`, `fingerprintd`) to crates.io.
-# `fp-wasm` is deliberately NOT published: it is a wasm-pack artifact with a
-# build-time probe key, consumed as a vendored module, not as a Rust dependency.
+# the Rust compute crate (`fingerprintd`, crates/fp-core) to crates.io.
+# Not published: `fingerprintd-server` (a deployable, not a library) and
+# `fp-wasm` (a wasm-pack artifact with a build-time probe key, consumed as a
+# vendored module, not as a Rust dependency).
 #
 # Trigger: push a tag `vX.Y.Z` whose version equals BOTH manifests
 # (packages/client/package.json and the Cargo workspace version), or run it
@@ -115,10 +116,15 @@ jobs:
           if [ -n "$NPM_TOKEN" ]; then
             echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$HOME/.npmrc"
           fi
-          npm publish
+          name="$(jq -r .name package.json)"; ver="$(jq -r .version package.json)"
+          if npm view "$name@$ver" version >/dev/null 2>&1; then
+            echo "$name@$ver is already on npm — skipping"
+          else
+            npm publish
+          fi
 
   crates:
-    name: crates.io (fingerprintd-core, fingerprintd)
+    name: crates.io (fingerprintd)
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -139,12 +145,16 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      # `--workspace` orders inter-dependent crates (core first) and waits for
-      # the index between them (cargo >= 1.90).
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
-        run: cargo publish --workspace --exclude fp-wasm --locked
+        run: |
+          ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if curl -sf -A "fingerprintd-release" "https://crates.io/api/v1/crates/fingerprintd/$ver" >/dev/null; then
+            echo "fingerprintd@$ver is already on crates.io — skipping"
+          else
+            cargo publish -p fingerprintd --locked
+          fi
 
   github-release:
     name: GitHub Release

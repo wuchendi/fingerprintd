@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use fingerprintd::fuzzy::FuzzyStore;
+use fingerprintd_server::fuzzy::FuzzyStore;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 

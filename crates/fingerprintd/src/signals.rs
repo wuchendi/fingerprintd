@@ -1,18 +1,18 @@
 //! HTTP-layer adapter for the passive network-signal compute (architecture §4.2 / §4.4 / §6).
 //!
 //! The framework-free compute — the UA-vs-TLS consistency cross-check and the
-//! IP-reputation classification — lives in [`fingerprintd_core::signals`] so every
+//! IP-reputation classification — lives in [`fingerprintd::signals`] so every
 //! deployment target (this native Axum server and the WebAssembly edge build)
 //! shares it. This module is the thin HTTP adapter: it owns the trusted-header
 //! names, pulls the two header strings off an [`axum::http::HeaderMap`], and
-//! delegates to [`fingerprintd_core::signals::compute`].
+//! delegates to [`fingerprintd::signals::compute`].
 //!
 //! The moved types are re-exported so downstream `use crate::signals::{…}` keeps
 //! compiling unchanged.
 
 use axum::http::HeaderMap;
-use fingerprintd_core::signals::compute;
-pub use fingerprintd_core::signals::{
+use fingerprintd::signals::compute;
+pub use fingerprintd::signals::{
     ClientIntegrity, IpIntel, IpRisk, PassiveSignals, PersonaCoherence, StaticIpIntel,
     TlsConsistency, persona_coherence,
 };
@@ -30,7 +30,7 @@ pub const JA4_HEADER: &str = "cf-bot-management-ja4";
 /// Extract the passive signals for a request from its trusted headers.
 ///
 /// Pulls the `CF-Connecting-IP` and JA4 header strings and delegates the compute
-/// to [`fingerprintd_core::signals::compute`]: a missing/unparseable IP defaults to
+/// to [`fingerprintd::signals::compute`]: a missing/unparseable IP defaults to
 /// [`IpRisk::Low`], and a missing or unparseable JA4 yields
 /// [`TlsConsistency::Degraded`] (the auto-degrade path, §4.2).
 ///

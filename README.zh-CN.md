@@ -75,10 +75,10 @@ flowchart LR
 运行原生服务(默认监听 `127.0.0.1:8080`):
 
 ```bash
-cargo run -p fingerprintd
+cargo run --bin fingerprintd
 
 # 覆盖监听地址
-FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run -p fingerprintd
+FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run --bin fingerprintd
 
 # 探测存活
 curl -i http://127.0.0.1:8080/health
@@ -147,8 +147,8 @@ FP_PROBE_KEY=<key> bun run deploy:cf all   # 真正部署(需 wrangler login 或
 
 ```
 crates/
-  fp-core/          无框架的计算 + 存储 trait(共享引擎)—— crates.io `fingerprintd-core`
-  fingerprintd/     原生 Axum 服务(challenge / identify / 擦除)—— crates.io `fingerprintd`
+  fp-core/          无框架的计算 + 存储 trait(共享引擎)—— crates.io `fingerprintd`
+  fingerprintd/     原生 Axum 服务(challenge / identify / 擦除)—— crate `fingerprintd-server`,不发布
   fp-wasm/          Rust→WASM 的 probe 核心 + 边缘引擎(不发布;作为构建产物内嵌)
 packages/
   client/           TypeScript 浏览器 SDK(FingerprintJS/BotD + 采集器)—— npm `@cdlab/fingerprintd`
@@ -200,15 +200,14 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的命令,外加 
 
 ## 发布
 
-共发布三个产物,共用一个版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致):
+对外发布两个产物,同名、同版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致):
 
 | 产物 | 仓库 | 安装 |
 |---|---|---|
 | 浏览器 SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
-| 计算引擎 | crates.io `fingerprintd-core` | `cargo add fingerprintd-core` |
-| 原生服务 | crates.io `fingerprintd` | `cargo install fingerprintd` |
+| 计算引擎 | crates.io `fingerprintd` | `cargo add fingerprintd` |
 
-`crates/fp-wasm` 不发布:它是带编译期 probe key 的构建产物,内嵌进 SDK 与边缘 Worker。npm 包里的 `.wasm` 是开发密钥构建 —— 启用 probe 校验的部署需用自己的密钥重建(见 [`packages/client/README.md`](packages/client/README.md))。
+原生服务(`crates/fingerprintd`,crate 名 `fingerprintd-server`)是可部署程序而非库,不发布,在仓库内用 `cargo run --bin fingerprintd` 运行。`crates/fp-wasm` 同样不发布:它是带编译期 probe key 的构建产物,内嵌进 SDK 与边缘 Worker。npm 包里的 `.wasm` 是开发密钥构建 —— 启用 probe 校验的部署需用自己的密钥重建(见 [`packages/client/README.md`](packages/client/README.md))。
 
 发布由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 执行:同时提升两个清单里的版本号,再推送同名 tag:
 
@@ -216,11 +215,11 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的命令,外加 
 git tag v0.0.1 && git push origin v0.0.1
 ```
 
-工作流校验 tag、重建 WASM、测试并构建 SDK、发布到 npm,然后把 `fingerprintd-core` 与 `fingerprintd` 发布到 crates.io,最后为该 tag 创建带自动生成说明的 GitHub Release。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:
+工作流校验 tag、重建 WASM、测试并构建 SDK、发布到 npm,然后把 `fingerprintd` 发布到 crates.io,最后为该 tag 创建带自动生成说明的 GitHub Release。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:
 
 ```bash
 bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)
-cargo publish --workspace --exclude fp-wasm --locked
+cargo publish -p fingerprintd --locked
 ```
 
 ## 设计

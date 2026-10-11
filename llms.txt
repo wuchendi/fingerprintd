@@ -15,7 +15,7 @@ Primary docs:
 
 ## What it is
 
-- One compute engine (`crates/fp-core`, published as `fingerprintd-core`), two deployment targets: a native Axum
+- One compute engine (`crates/fp-core`, published on crates.io as `fingerprintd`), two deployment targets: a native Axum
   server (`crates/fingerprintd`) and a Cloudflare Worker (`apps/edge`, running
   `fp-core` compiled to WASM). A client works against either unchanged.
 - A browser SDK (`@cdlab/fingerprintd`) wraps FingerprintJS/BotD, computes
@@ -73,8 +73,8 @@ for identity trust, not `confidence` alone.
 ## Run the native server
 
 ```bash
-cargo run -p fingerprintd                                   # 127.0.0.1:8080
-FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run -p fingerprintd
+cargo run --bin fingerprintd                                   # 127.0.0.1:8080
+FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run --bin fingerprintd
 curl -i http://127.0.0.1:8080/health
 ```
 

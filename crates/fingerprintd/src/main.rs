@@ -5,7 +5,7 @@
 
 use std::process::ExitCode;
 
-use fingerprintd::{build_router, config::Config, state::AppState};
+use fingerprintd_server::{build_router, config::Config, state::AppState};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]

@@ -65,7 +65,7 @@ const CF_CONNECTING_IP = 'cf-connecting-ip'
  *  (`crates/fingerprintd/src/lib.rs` `claimed_ua`). First string value wins. */
 const CLAIMED_UA_KEYS = ['userAgent', 'user_agent', 'ua']
 
-/** Cross-session new-device velocity thresholds, mirroring `fingerprintd_core::fuzzy::velocity`
+/** Cross-session new-device velocity thresholds, mirroring `fingerprintd::fuzzy::velocity`
  *  (WINDOW 3600s; per-IP MEDIUM 5 / HIGH 20; per-JA4-class MEDIUM 100 / HIGH 400 —
  *  orders of magnitude higher because a JA4 class is shared by every real client
  *  of a browser family). Kept in lockstep with the native constants. */
@@ -151,7 +151,7 @@ export function fingerprintRoutes(deps: FingerprintDeps): Hono {
     // Host I/O orchestration: derive blocking keys → recall the candidate block
     // → score → persist the verdict. The engine is pure; the host owns state, so
     // it writes back per the decision (drift a match, mint a new device, leave a
-    // review untouched) — mirroring `fingerprintd_core`'s `identify`.
+    // review untouched) — mirroring `fingerprintd`'s `identify`.
     const components = req.stable_components
     const blockingKeys = deps.engine.blockingKeys(components)
     const candidates = await deps.candidates.recall(blockingKeys)
@@ -181,7 +181,7 @@ export function fingerprintRoutes(deps: FingerprintDeps): Hono {
     )
 
     // Cross-session new-device velocity, computed from the VELOCITY Durable
-    // Object on a fresh device (native parity: `fingerprintd_core::fuzzy` records/bands only
+    // Object on a fresh device (native parity: `fingerprintd::fuzzy` records/bands only
     // on a NewDevice verdict, keyed on the edge-observed IP + JA4 class).
     const velocity = await edgeVelocity(c.req.raw, outcome, deps)
 
@@ -325,7 +325,7 @@ function claimedUa(components: Record<string, unknown>): string | undefined {
 
 /**
  * Cross-session new-device velocity bands for one request, computed from the
- * VELOCITY Durable Object — the edge form of `fingerprintd_core::fuzzy`'s velocity signal.
+ * VELOCITY Durable Object — the edge form of `fingerprintd::fuzzy`'s velocity signal.
  *
  * Only a freshly minted device from a TRUSTED, edge-observed IP / JA4 feeds the
  * signal, mirroring native exactly: the engine records/bands only on a
@@ -391,7 +391,7 @@ async function edgeVelocity(
 }
 
 /** Band a new-device `count` against explicit `medium`/`high` thresholds
- *  (`fingerprintd_core::fuzzy::velocity::VelocityBand::classify_with`). */
+ *  (`fingerprintd::fuzzy::velocity::VelocityBand::classify_with`). */
 function classifyBand(count: number, medium: number, high: number): string {
   if (count >= high) return 'high'
   if (count >= medium) return 'medium'
@@ -401,7 +401,7 @@ function classifyBand(count: number, medium: number, high: number): string {
 /**
  * Derive the coarse, low-cardinality JA4 **class** key — the structural
  * `(protocol, tls_version, sni, alpn)` shape without the cipher/extension counts
- * — replicating `fingerprintd_core::signals::ja4_class` (which reuses `parse_ja4_shape`).
+ * — replicating `fingerprintd::signals::ja4_class` (which reuses `parse_ja4_shape`).
  * Returns `undefined` when the `JA4_a` prefix is missing / too short / has
  * non-numeric count fields, so a malformed JA4 records no class event.
  */

@@ -15,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use fingerprintd::fuzzy::eval::{Fixture, evaluate};
+use fingerprintd_server::fuzzy::eval::{Fixture, evaluate};
 
 fn main() -> ExitCode {
     let path = std::env::args().nth(1);

@@ -1,5 +1,5 @@
 [package]
-name        = "fingerprintd-core"
+name        = "fingerprintd"
 description = "Framework-free device-fingerprinting compute and storage traits shared by the fingerprintd server and its edge WASM engine."
 version.workspace      = true
 edition.workspace      = true
@@ -17,7 +17,7 @@ publish     = true
 workspace = true
 
 [lib]
-name = "fingerprintd_core"
+name = "fingerprintd"
 path = "src/lib.rs"
 
 [features]

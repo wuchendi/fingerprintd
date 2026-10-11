@@ -248,7 +248,7 @@ WebGL 纯色 clear、离线渲染的 `ConstantSourceNode`、1/64 px 可表示偏
 始终中性)。该分带**默认只做展示**:合法的隐私工具(Brave farbling、canvas 屏蔽器)会触发同样的
 探针,所以 `noise` 的置信度下调是可选项(`integrity_penalty_enabled` /
 `FP_INTEGRITY_PENALTY_ENABLED`),在拿到真实流量的误报率之前保持关闭。两个栈通过共享核心
-(`fingerprintd_core::signals::ClientIntegrity`)计算同一结果。
+(`fingerprintd::signals::ClientIntegrity`)计算同一结果。
 
 `persona_coherence` 把 UA 声称的操作系统族和采集到的 `fonts` 集合做交叉检查:Windows 或 macOS
 的 UA,而字体集里**一个**该系统的核心字体都没有(取自 FingerprintJS 探测列表的极小精选集 ——
@@ -308,7 +308,7 @@ GDPR 被遗忘权(§7)。受 admin-key 门控(`admin_key`):未设置 ⇒ 该路�
 | 运行时 | Axum / Tokio,长驻进程 | Cloudflare Worker(V8 isolate,按请求) |
 | Nonce 存储 | 内存,单次使用 + TTL,有界 + 回收 | Durable Object(原子 check-and-burn + TTL alarm) |
 | 指纹库 | 内存倒排索引 + 频次表,有界/驱逐 | D1(SQLite):`templates` + `blocking_index` |
-| 计算 | 原生 `fingerprintd_core` | `fingerprintd_core` 编译为 WASM(`crates/fp-wasm`) |
+| 计算 | 原生 `fingerprintd` | `fingerprintd` 编译为 WASM(`crates/fp-wasm`) |
 | 被动信号 | 完整 JA4/IP 融合(§4.2) | 默认中立;JA4/IP 需受信边缘 |
 | 密钥 | config / env | Worker Secrets |
 

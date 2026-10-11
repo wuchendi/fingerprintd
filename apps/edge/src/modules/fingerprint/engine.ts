@@ -87,7 +87,7 @@ export class EdgeEngine {
 
   /**
    * Passive-signal verdict for one request, computed by the shared WASM free
-   * export (`fingerprintd_core::signals::compute`) so the edge reaches the SAME UA↔TLS /
+   * export (`fingerprintd::signals::compute`) so the edge reaches the SAME UA↔TLS /
    * IP-risk verdict as the native server. Secret-free — unlike the other methods
    * it does not touch the engine instance.
    *
@@ -107,7 +107,7 @@ export class EdgeEngine {
 
   /**
    * Fused client-integrity verdict for one request, computed by the shared WASM
-   * free export (`fingerprintd_core::signals::ClientIntegrity`) so the edge reaches the
+   * free export (`fingerprintd::signals::ClientIntegrity`) so the edge reaches the
    * SAME band and confidence delta as the native server. Secret-free.
    *
    * `undefined` (field absent) or malformed material reads `unavailable` with a
@@ -124,7 +124,7 @@ export class EdgeEngine {
 
   /**
    * UA-claimed OS family vs the collected `fonts` set, computed by the shared
-   * WASM free export (`fingerprintd_core::signals::persona_coherence`) so the edge reaches
+   * WASM free export (`fingerprintd::signals::persona_coherence`) so the edge reaches
    * the SAME label as native. Surfaced-only. A missing UA, an OS family outside
    * the curated set or a non-array `fonts` reads `unknown` (neutral).
    */

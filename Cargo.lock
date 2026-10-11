@@ -228,23 +228,6 @@ dependencies = [
 name = "fingerprintd"
 version = "0.0.1"
 dependencies = [
- "axum",
- "figment",
- "fingerprintd-core",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fingerprintd-core"
-version = "0.0.1"
-dependencies = [
  "async-trait",
  "hex",
  "hmac",
@@ -257,10 +240,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fingerprintd-server"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "figment",
+ "fingerprintd",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fp-wasm"
 version = "0.0.1"
 dependencies = [
- "fingerprintd-core",
+ "fingerprintd",
  "hex",
  "hmac",
  "serde",

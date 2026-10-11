@@ -24,7 +24,7 @@ cross-stack parity proof now run:
 
 The orchestration in `src/app.ts` (a Hono app) — derive blocking keys → recall
 candidates → score → persist per the verdict — is the **real edge host flow**,
-mirroring `fingerprintd_core`'s `identify`. `POST /identify` bodies are validated with Zod.
+mirroring `fingerprintd`'s `identify`. `POST /identify` bodies are validated with Zod.
 State is injected (`NonceStore` / `CandidateSource`), so the app is unchanged
 whether it runs on the Durable Object + D1 (Worker) or the in-isolate stubs (Node
 unit tests, or a bare `wrangler dev` with no bindings).
@@ -45,7 +45,7 @@ Both are seeded from the fixture's `salt_secret` (native production uses a rando
 per-process salt; the edge pins it as a Worker Secret so keys are stable across
 isolates), and both assert `visitorId`, `decision`, `is_new_device`,
 `collision_risk`, and `confidence` (to a `1e-12` tolerance). Regenerate the
-`expect` values with `cargo test -p fingerprintd --test parity -- --nocapture`,
+`expect` values with `cargo test -p fingerprintd-server --test parity -- --nocapture`,
 which prints the outcomes the native engine computed.
 
 Two keyed-hash vectors additionally pin the secret-gated paths byte-for-byte
@@ -211,7 +211,7 @@ both halves of the parity fixture are exercised:
 
 ```bash
 bun run test                                       # edge half (workers project)
-cargo test -p fingerprintd --test parity           # native half (from repo root)
+cargo test -p fingerprintd-server --test parity           # native half (from repo root)
 ```
 
 The `workers` test project (`*.workers.test.ts`) runs under

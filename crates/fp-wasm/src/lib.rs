@@ -1,6 +1,6 @@
 //! `fp-wasm` — the fingerprinting compute compiled to WebAssembly.
 //!
-//! This crate exposes two WASM surfaces backed by [`fingerprintd_core`]:
+//! This crate exposes two WASM surfaces backed by [`fingerprintd`]:
 //!
 //! - The **browser-collector probe** ([`probe`]): a probe-capable browser
 //!   collector calls it with the one-time nonce advertised by `GET /challenge`
@@ -23,7 +23,7 @@
 //!   request — blocking-key derivation, Fellegi–Sunter scoring, probe
 //!   verification, and response signing — while the host owns the I/O (nonce
 //!   Durable Object, D1 candidate index) around it. Every method delegates to
-//!   [`fingerprintd_core`], so the Worker and the native Axum server share one
+//!   [`fingerprintd`], so the Worker and the native Axum server share one
 //!   implementation.
 //!
 //! ## Embedded key — depth, not a hard lock
@@ -38,11 +38,11 @@
 //! `probe_key`. The server-side [`FpEngine`] instead takes its keys at runtime
 //! (Worker Secrets), never embedding them.
 
-use fingerprintd_core::fuzzy::FuzzyStore;
-use fingerprintd_core::probe::ProbeVerifier;
-use fingerprintd_core::signals::{ClientIntegrity, persona_coherence};
-use fingerprintd_core::signals::{StaticIpIntel, compute};
-use fingerprintd_core::signing::ResponseSigner;
+use fingerprintd::fuzzy::FuzzyStore;
+use fingerprintd::probe::ProbeVerifier;
+use fingerprintd::signals::{ClientIntegrity, persona_coherence};
+use fingerprintd::signals::{StaticIpIntel, compute};
+use fingerprintd::signing::ResponseSigner;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ pub fn probe(nonce: &str) -> String {
 }
 
 /// Passive-signals verdict for one request, computed exactly as the native
-/// server ([`fingerprintd_core::signals::compute`]) does — so the edge Worker reaches the
+/// server ([`fingerprintd::signals::compute`]) does — so the edge Worker reaches the
 /// SAME UA↔TLS / IP-risk verdict.
 ///
 /// Needs no secrets (unlike [`FpEngine`]), so it is a free `#[wasm_bindgen]`
@@ -130,7 +130,7 @@ fn passive_signals_impl(
 
 /// Fuse the client's known-answer integrity probe verdicts (the request's
 /// top-level `integrity` object, JSON-encoded) into the shared verdict + the
-/// confidence adjustment (`fingerprintd_core::signals::ClientIntegrity`). The edge Worker
+/// confidence adjustment (`fingerprintd::signals::ClientIntegrity`). The edge Worker
 /// calls this so its `client_integrity` band and fusion are byte-identical to
 /// the native server's. `None` / unparseable JSON ⇒ `unavailable`, adjustment
 /// `0` (neutral). The penalty applies only when the deployment enabled it.
@@ -155,7 +155,7 @@ fn client_integrity_impl(integrity_json: Option<&str>, penalty_enabled: bool) ->
 }
 
 /// Cross-check the UA-claimed OS family against the collected `fonts` set
-/// (JSON array, as the SDK sends it) — `fingerprintd_core::signals::persona_coherence`.
+/// (JSON array, as the SDK sends it) — `fingerprintd::signals::persona_coherence`.
 /// Returns the wire label `consistent` | `mismatch` | `unknown`; `None` or
 /// unparseable `fonts_json` reads `unknown` (neutral). Surfaced-only. Owned
 /// `Option<String>` is the wasm-bindgen boundary shape (see [`passive_signals`]).
@@ -225,7 +225,7 @@ impl FpEngine {
     /// "..", "components": {..} }, ..] }` — the recalled candidate templates the
     /// host fetched from D1. The reply is
     /// `{ "visitor_id", "is_new_device", "decision", "confidence", "score",
-    /// "compared_components", "collision_risk" }` (see [`fingerprintd_core`]'s
+    /// "compared_components", "collision_risk" }` (see [`fingerprintd`]'s
     /// `MatchOutcome`). The host applies its own persistence per the returned
     /// `decision` (drift a match, mint a new device, leave a review untouched).
     ///
@@ -391,7 +391,7 @@ mod tests {
     }
 
     /// The server-side engine reproduces the SAME shared probe vector through
-    /// [`fingerprintd_core`]'s verifier — tying the edge host's probe check to the client.
+    /// [`fingerprintd`]'s verifier — tying the edge host's probe check to the client.
     #[test]
     fn engine_expected_probe_matches_shared_vector() {
         let engine = FpEngine::new("salt", "test-probe-secret", "sign");
@@ -406,7 +406,7 @@ mod tests {
         assert!(!engine.verify_probe("fixed-nonce-000", "deadbeef"));
     }
 
-    /// Signing round-trips the `fingerprintd_core` signer and binds timestamp + body.
+    /// Signing round-trips the `fingerprintd` signer and binds timestamp + body.
     #[test]
     fn engine_sign_binds_timestamp_and_body() {
         let engine = FpEngine::new("salt", "pk", "signing-secret");
@@ -423,7 +423,7 @@ mod tests {
 
     /// Shared signing vector — the edge engine, keyed with the deployment's
     /// signing secret (a Worker Secret), reproduces the SAME
-    /// `hex(HMAC-SHA256(key, issued_ms_be ++ body))` the native `fingerprintd_core` signer
+    /// `hex(HMAC-SHA256(key, issued_ms_be ++ body))` the native `fingerprintd` signer
     /// produces. The JS side (`apps/edge/tests/handler.test.ts`) asserts this
     /// exact hex too, so the signing-secret path is byte-identical native↔edge —
     /// the response-signing analogue of the `ad83…37d0` probe vector.
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(penalised["client_integrity"], "noise");
         assert_eq!(
             penalised["confidence_adjustment"],
-            -fingerprintd_core::signals::INTEGRITY_NOISE_PENALTY
+            -fingerprintd::signals::INTEGRITY_NOISE_PENALTY
         );
     }
 
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn persona_coherence_label_mirrors_fingerprintd_core() {
+    fn persona_coherence_label_mirrors_fingerprintd() {
         let windows_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0";
         assert_eq!(
             persona_coherence_impl(Some(windows_ua), Some(r#"["Arial","Courier New"]"#)),

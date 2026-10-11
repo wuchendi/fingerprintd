@@ -1,5 +1,5 @@
 [package]
-name        = "fingerprintd"
+name        = "fingerprintd-server"
 description = "Server-authoritative device-fingerprinting service (anti-fraud / anti-automation): one-time challenge, server-side fuzzy matching, and passive-signal fusion."
 version.workspace      = true
 edition.workspace      = true
@@ -8,10 +8,9 @@ authors.workspace      = true
 license.workspace      = true
 repository.workspace   = true
 homepage.workspace     = true
-readme      = "../../README.md"
 keywords    = ["fingerprinting", "anti-fraud", "bot-detection", "device-id", "security"]
 categories  = ["web-programming::http-server", "authentication"]
-publish     = true
+publish     = false
 
 [lints]
 workspace = true
@@ -21,11 +20,11 @@ name = "fingerprintd"
 path = "src/main.rs"
 
 [lib]
-name = "fingerprintd"
+name = "fingerprintd_server"
 path = "src/lib.rs"
 
 [dependencies]
-fingerprintd-core = { path = "../fp-core", version = "0.0.1" }
+fingerprintd = { path = "../fp-core", version = "0.0.1" }
 # `time` (additive over the workspace features) powers the retention sweep's
 # `tokio::time::interval`; the rest come from the workspace dep.
 tokio = { workspace = true, features = ["time"] }

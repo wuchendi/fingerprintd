@@ -14,7 +14,7 @@
 
 use std::{fs, path::PathBuf};
 
-use fingerprintd_core::{
+use fingerprintd::{
     fuzzy::{Decision, FuzzyStore},
     signals::{PersonaCoherence, persona_coherence},
 };

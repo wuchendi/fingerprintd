@@ -75,10 +75,10 @@ Both deployments serve the same wire contract.
 Run the native server (listens on `127.0.0.1:8080` by default):
 
 ```bash
-cargo run -p fingerprintd
+cargo run --bin fingerprintd
 
 # override the bind address
-FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run -p fingerprintd
+FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run --bin fingerprintd
 
 # probe liveness
 curl -i http://127.0.0.1:8080/health
@@ -147,8 +147,8 @@ The `probe_key` / `response_signing_key` / `admin_key` controls are **fail-close
 
 ```
 crates/
-  fp-core/          framework-free compute + storage traits (the shared engine) — crates.io `fingerprintd-core`
-  fingerprintd/     native Axum server (challenge / identify / erasure) — crates.io `fingerprintd`
+  fp-core/          framework-free compute + storage traits (the shared engine) — crates.io `fingerprintd`
+  fingerprintd/     native Axum server (challenge / identify / erasure) — crate `fingerprintd-server`, not published
   fp-wasm/          Rust→WASM probe core + edge engine (not published; vendored build output)
 packages/
   client/           TypeScript browser SDK (FingerprintJS/BotD + collector) — npm `@cdlab/fingerprintd`
@@ -200,15 +200,14 @@ Per-component tooling:
 
 ## Publishing
 
-Three artifacts are published, all from one version (the Cargo workspace version and `packages/client/package.json` must agree):
+Two artifacts are published under one name, from one version (the Cargo workspace version and `packages/client/package.json` must agree):
 
 | Artifact | Registry | Install |
 |---|---|---|
 | Browser SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
-| Compute engine | crates.io `fingerprintd-core` | `cargo add fingerprintd-core` |
-| Native server | crates.io `fingerprintd` | `cargo install fingerprintd` |
+| Compute engine | crates.io `fingerprintd` | `cargo add fingerprintd` |
 
-`crates/fp-wasm` is not published: it is a build output with a compile-time probe key, vendored into the SDK and the edge Worker. The `.wasm` inside the npm package is the dev-keyed build — a deployment that enforces the probe rebuilds it with its own key (see [`packages/client/README.md`](packages/client/README.md)).
+The native server (`crates/fingerprintd`, crate `fingerprintd-server`) is a deployable, not a library, and is not published; run it from the repo with `cargo run --bin fingerprintd`. `crates/fp-wasm` is not published either: it is a build output with a compile-time probe key, vendored into the SDK and the edge Worker. The `.wasm` inside the npm package is the dev-keyed build — a deployment that enforces the probe rebuilds it with its own key (see [`packages/client/README.md`](packages/client/README.md)).
 
 Releases run from [`.github/workflows/release.yml`](.github/workflows/release.yml): bump the version in both manifests, then push a matching tag:
 
@@ -216,11 +215,11 @@ Releases run from [`.github/workflows/release.yml`](.github/workflows/release.ym
 git tag v0.0.1 && git push origin v0.0.1
 ```
 
-The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd-core` and `fingerprintd` to crates.io, and finally creates a GitHub Release for the tag with generated notes. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:
+The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd` to crates.io, and finally creates a GitHub Release for the tag with generated notes. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:
 
 ```bash
 bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)
-cargo publish --workspace --exclude fp-wasm --locked
+cargo publish -p fingerprintd --locked
 ```
 
 ## Design

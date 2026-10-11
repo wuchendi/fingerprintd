@@ -114,7 +114,7 @@ export class VelocityStore implements NewDeviceVelocityStore {
 
   /**
    * Distinct new devices minted for `ip` within `windowMs` — the hot-path,
-   * edge-side form of the per-IP new-device velocity (`fingerprintd_core::fuzzy::velocity`).
+   * edge-side form of the per-IP new-device velocity (`fingerprintd::fuzzy::velocity`).
    * A `NewDevice` verdict always mints a fresh `visitorId`, so the distinct-member
    * count of visitorIds seen for the IP equals fp-core's new-device event count.
    */

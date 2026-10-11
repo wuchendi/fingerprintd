@@ -18,7 +18,7 @@
 
 import type { ScoreOutcome } from './types'
 
-/** The outcome of consuming a nonce, mirroring `fingerprintd_core::nonce::NonceOutcome`.
+/** The outcome of consuming a nonce, mirroring `fingerprintd::nonce::NonceOutcome`.
  *  Only `valid` admits the request; every other value yields `401`. */
 export type NonceOutcome = 'valid' | 'expired' | 'reused' | 'unknown'
 
@@ -51,7 +51,7 @@ export interface CandidateSource {
 
   /**
    * Fold an observation into the library per the scorer's `outcome`, mirroring
-   * `fingerprintd_core::fuzzy::FuzzyStore::identify`'s persistence (fuzzy-matching §7):
+   * `fingerprintd::fuzzy::FuzzyStore::identify`'s persistence (fuzzy-matching §7):
    *   - `match`      — drift the matched template toward `components` and index
    *                    the observed `blockingKeys` under its id.
    *   - `new_device` — store the freshly minted template and index its keys.
