@@ -38,6 +38,10 @@ pub enum NonceOutcome {
 /// native TTL and an atomic set-if-unused, so replay protection holds across
 /// multiple service instances. It is intentionally not implemented here (no
 /// `redis` dependency, and tests must not require a running server).
+// `async_trait` expands each method to a boxed future with a bare `#[must_use]`
+// on top of the already-must_use `Pin<Box<dyn Future>>`; the lint fires inside
+// the macro output and cannot be fixed at the call site.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait NonceStore: Send + Sync {
     /// Mint a fresh single-use nonce with the store's configured TTL.

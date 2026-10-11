@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(ka, kb, "same secret must yield identical keys");
 
         let parsed: Vec<String> = serde_json::from_str(&ka).unwrap();
-        assert!(!parsed.is_empty());
+        assert_ne!(parsed.len(), 0);
         assert!(parsed.iter().all(|k| k.len() == 64)); // hex of a 32-byte digest
 
         let other = FpEngine::new("other-secret", "pk", "sk");

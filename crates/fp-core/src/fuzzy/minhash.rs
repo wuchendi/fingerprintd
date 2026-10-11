@@ -170,9 +170,7 @@ mod tests {
     #[test]
     fn empty_set_yields_no_keys() {
         let lsh = MinHashLsh::new();
-        assert!(
-            lsh.band_keys(&Salt::random().hash_set(Vec::<String>::new()))
-                .is_empty()
-        );
+        let keys = lsh.band_keys(&Salt::random().hash_set(Vec::<String>::new()));
+        assert_eq!(keys.len(), 0);
     }
 }
