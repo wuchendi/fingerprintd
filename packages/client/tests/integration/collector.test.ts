@@ -1,7 +1,8 @@
 /**
  * FULL collector assembly. Proves `createCollector` composes the stable
- * half + probe + `ts` into ONE payload and that `run()` forwards every field to
- * `/identify`, with `stable_components` and `probe` kept SEPARATE.
+ * half + probe + `ts` + `integrity` into ONE payload and that `run()` forwards
+ * every field to `/identify`, with `stable_components`, `probe` and `integrity`
+ * kept SEPARATE.
  *
  * There is no headless browser here, so every backend is injected with a
  * deterministic fake — this exercises the WIRING, not real fingerprint values.
@@ -14,6 +15,7 @@ import { describe, expect, it } from 'vitest'
 import { createCollector } from '../../src/collector'
 import type { BotdDetector, FingerprintAgent } from '../../src/fingerprint'
 import { run } from '../../src/index'
+import type { Integrity } from '../../src/integrity'
 import { initProbe } from '../../src/probe'
 import type { ChallengeResponse } from '../../src/types'
 import type { RecordedRequest } from '../helpers'
@@ -60,11 +62,19 @@ function challengeNoVerify(): ChallengeResponse {
   return challenge
 }
 
+const fakeIntegrity: Integrity = {
+  canvas: 'noise',
+  webgl: 'ok',
+  audio: 'ok',
+  rect: 'unavailable',
+}
+
 const deps = {
   fingerprint: {
     loadFingerprint: fakeFingerprint({ ua: { value: 'Chrome/120' } }),
     loadBotd: fakeBotd(),
   },
+  integrity: () => Promise.resolve(fakeIntegrity),
 }
 
 describe('createCollector', () => {
@@ -82,9 +92,25 @@ describe('createCollector', () => {
     // mixed in.
     expect(collected.stable_components.ua).toBe('Chrome/120')
     expect(JSON.stringify(collected.stable_components)).not.toContain('probe:')
-    // Probe + ts stamped, separate from the matching input.
+    // Probe + ts + integrity stamped, separate from the matching input.
     expect(collected.probe).toBe('probe:nonce-abc')
     expect(collected.ts).toBe(1_700_000_000_123)
+    expect(collected.integrity).toEqual(fakeIntegrity)
+    expect(JSON.stringify(collected.stable_components)).not.toContain('noise')
+  })
+
+  it('reports every probe unavailable where the browser APIs are missing', async () => {
+    // jsdom has no 2d/webgl canvas, no OfflineAudioContext and no layout, so
+    // the DEFAULT integrity backend must degrade to `unavailable` (neutral
+    // server-side) rather than throw or report `noise`.
+    const collector = createCollector({ fingerprint: deps.fingerprint })
+    const collected = await collector(challengeNoVerify())
+    expect(collected.integrity).toEqual({
+      canvas: 'unavailable',
+      webgl: 'unavailable',
+      audio: 'unavailable',
+      rect: 'unavailable',
+    })
   })
 
   it('omits the probe when the challenge does not advertise verify', async () => {
@@ -106,7 +132,7 @@ describe('createCollector', () => {
     expect(collected.ts).toBeTypeOf('number')
   })
 
-  it('run() forwards nonce, ts, probe and stable_components', async () => {
+  it('run() forwards nonce, ts, probe, integrity and stable_components', async () => {
     const recorded: RecordedRequest[] = []
     const fetch = mockFetch(
       {
@@ -132,6 +158,9 @@ describe('createCollector', () => {
     expect(sent.ts).toBe(1_700_000_000_123)
     expect(sent.probe).toBe('probe:nonce-abc')
     expect(sent.stable_components.ua).toBe('Chrome/120')
+    // Top-level, never nested under the matching input.
+    expect(sent.integrity).toEqual(fakeIntegrity)
+    expect(sent.stable_components.integrity).toBeUndefined()
   })
 
   it('computes the real WASM probe end-to-end (vendored dev key)', async () => {

@@ -71,6 +71,15 @@ pub struct Config {
     /// browser-looking JA4 to forge consistency. Overridable via
     /// `FINGERPRINTD_TRUST_EDGE_HEADERS`.
     pub trust_edge_headers: bool,
+    /// Whether the client's known-answer integrity probe verdicts (the request's
+    /// top-level `integrity`, see `fp_core::signals::ClientIntegrity`) may lower
+    /// `/identify` confidence. The verdict is **always surfaced** as
+    /// `signals.client_integrity`; this flag only enables the `noise` downgrade.
+    /// Left `false` by default: legitimate privacy tooling (Brave farbling, canvas
+    /// blockers) trips the same probes, so the band is surfaced-only until a
+    /// real-traffic false-positive rate is known. Overridable via
+    /// `FINGERPRINTD_INTEGRITY_PENALTY_ENABLED`.
+    pub integrity_penalty_enabled: bool,
     /// Optional pre-shared HMAC key for nonce-probe verification (architecture §4.1
     /// pt 3). When set (and non-empty), `GET /challenge` advertises the probe
     /// transform and `POST /identify` requires a correct `probe` field, rejecting
@@ -149,6 +158,7 @@ impl Default for Config {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             nonce_ttl_secs: 30,
             trust_edge_headers: false,
+            integrity_penalty_enabled: false,
             probe_key: None,
             response_signing_key: None,
             enforce_ts_window: false,

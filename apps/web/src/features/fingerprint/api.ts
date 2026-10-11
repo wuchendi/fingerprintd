@@ -157,6 +157,7 @@ export async function runFlow(
   }
   if (collected.ts !== undefined) request.ts = collected.ts
   if (collected.probe !== undefined) request.probe = collected.probe
+  if (collected.integrity !== undefined) request.integrity = collected.integrity
 
   const { result, bodyBytes, timestamp, signature } = await identify(
     baseUrl,

@@ -1,0 +1,301 @@
+{
+  "meta": {
+    "label": "cloak-windows-seed-random",
+    "mode": "cloak",
+    "controller": "cloakbrowser-js-wrapper",
+    "binary": "cloakbrowser-free",
+    "persona": "windows",
+    "seed": "random",
+    "args": [
+      "--no-sandbox",
+      "--fingerprint-platform=windows",
+      "--fingerprint=69469"
+    ],
+    "chromium_major": 146,
+    "captured_at": "2026-10-11T06:36:47.893Z"
+  },
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+  "stable_components": {
+    "colorDepth": 24,
+    "sessionStorage": true,
+    "localStorage": true,
+    "indexedDB": true,
+    "openDatabase": false,
+    "vendor": "Google Inc.",
+    "cookiesEnabled": true,
+    "colorGamut": "srgb",
+    "forcedColors": false,
+    "monochrome": 0,
+    "contrast": 0,
+    "reducedMotion": false,
+    "reducedTransparency": false,
+    "hdr": false,
+    "pdfViewerEnabled": true,
+    "architecture": 255,
+    "applePay": -1,
+    "audioBaseLatency": -2,
+    "dateTimeLocale": "en-US",
+    "fonts": [],
+    "audio": 124.04344829275215,
+    "device_memory": 8,
+    "cpu_cores": 8,
+    "timezone": "UTC",
+    "platform": "Win32",
+    "plugins": [
+      {
+        "name": "PDF Viewer",
+        "description": "Portable Document Format",
+        "mimeTypes": [
+          {
+            "type": "application/pdf",
+            "suffixes": "pdf"
+          },
+          {
+            "type": "text/pdf",
+            "suffixes": "pdf"
+          }
+        ]
+      },
+      {
+        "name": "Chrome PDF Viewer",
+        "description": "Portable Document Format",
+        "mimeTypes": [
+          {
+            "type": "application/pdf",
+            "suffixes": "pdf"
+          },
+          {
+            "type": "text/pdf",
+            "suffixes": "pdf"
+          }
+        ]
+      },
+      {
+        "name": "Chromium PDF Viewer",
+        "description": "Portable Document Format",
+        "mimeTypes": [
+          {
+            "type": "application/pdf",
+            "suffixes": "pdf"
+          },
+          {
+            "type": "text/pdf",
+            "suffixes": "pdf"
+          }
+        ]
+      },
+      {
+        "name": "Microsoft Edge PDF Viewer",
+        "description": "Portable Document Format",
+        "mimeTypes": [
+          {
+            "type": "application/pdf",
+            "suffixes": "pdf"
+          },
+          {
+            "type": "text/pdf",
+            "suffixes": "pdf"
+          }
+        ]
+      },
+      {
+        "name": "WebKit built-in PDF",
+        "description": "Portable Document Format",
+        "mimeTypes": [
+          {
+            "type": "application/pdf",
+            "suffixes": "pdf"
+          },
+          {
+            "type": "text/pdf",
+            "suffixes": "pdf"
+          }
+        ]
+      }
+    ],
+    "botd": {
+      "detection": {
+        "bot": false
+      },
+      "signals": {
+        "process": {
+          "state": -1,
+          "error": "BotdError: window.process is undefined"
+        },
+        "android": {
+          "value": false,
+          "state": 0
+        },
+        "browserKind": {
+          "value": "chrome",
+          "state": 0
+        },
+        "browserEngineKind": {
+          "value": "chromium",
+          "state": 0
+        },
+        "documentFocus": {
+          "value": true,
+          "state": 0
+        },
+        "userAgent": {
+          "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "state": 0
+        },
+        "appVersion": {
+          "value": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+          "state": 0
+        },
+        "rtt": {
+          "value": 100,
+          "state": 0
+        },
+        "windowSize": {
+          "value": {
+            "outerWidth": 1288,
+            "outerHeight": 805,
+            "innerWidth": 1280,
+            "innerHeight": 720
+          },
+          "state": 0
+        },
+        "pluginsLength": {
+          "value": 5,
+          "state": 0
+        },
+        "pluginsArray": {
+          "value": true,
+          "state": 0
+        },
+        "errorTrace": {
+          "value": "TypeError: Cannot read properties of null (reading '0')\n    at getErrorTrace (http://localhost/harness.js:277:9)\n    at http://localhost/harness.js:60:22\n    at Array.map (<anonymous>)\n    at collect (http://localhost/harness.js:56:33)\n    at BotDetector.collect (http://localhost/harness.js:655:29)\n    at http://localhost/harness.js:3007:20\n    at async window.__fingerprintdHarness (http://localhost/harness.js:3183:33)\n    at async <anonymous>:337:30",
+          "state": 0
+        },
+        "productSub": {
+          "value": "20030107",
+          "state": 0
+        },
+        "windowExternal": {
+          "value": "[object External]",
+          "state": 0
+        },
+        "mimeTypesConsistent": {
+          "value": true,
+          "state": 0
+        },
+        "evalLength": {
+          "value": 33,
+          "state": 0
+        },
+        "webGL": {
+          "value": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL"
+          },
+          "state": 0
+        },
+        "webDriver": {
+          "value": false,
+          "state": 0
+        },
+        "languages": {
+          "value": [
+            [
+              "en-US"
+            ]
+          ],
+          "state": 0
+        },
+        "documentElementKeys": {
+          "value": [],
+          "state": 0
+        },
+        "functionBind": {
+          "value": "function bind() { [native code] }",
+          "state": 0
+        },
+        "distinctiveProps": {
+          "value": {
+            "awesomium": false,
+            "cef": false,
+            "cefsharp": false,
+            "coachjs": false,
+            "fminer": false,
+            "geb": false,
+            "nightmarejs": false,
+            "phantomas": false,
+            "phantomjs": false,
+            "rhino": false,
+            "selenium": false,
+            "webdriverio": false,
+            "webdriver": false,
+            "headless_chrome": false
+          },
+          "state": 0
+        },
+        "notificationPermissions": {
+          "value": false,
+          "state": 0
+        }
+      }
+    }
+  },
+  "integrity_measurements": {
+    "canvas": {
+      "diff_bytes": 20,
+      "total_bytes": 40000
+    },
+    "webgl": {
+      "distinct": [
+        "50,102,152,255",
+        "50,102,153,255",
+        "50,103,152,255",
+        "51,102,152,255",
+        "51,102,153,255",
+        "51,103,152,255"
+      ],
+      "expected": "51,102,153,255"
+    },
+    "audio": {
+      "distinct": [
+        0.500004768371582,
+        0.5000038146972656,
+        0.4999965727329254,
+        0.4999956488609314,
+        0.5000011324882507,
+        0.5000002384185791,
+        0.500002920627594,
+        0.5000020265579224,
+        0.49999749660491943,
+        0.4999993145465851,
+        0.49999839067459106,
+        0.5000038743019104,
+        0.5000029802322388,
+        0.4999956786632538,
+        0.4999966025352478,
+        0.49999570846557617
+      ],
+      "expected": 0.5
+    },
+    "rect": {
+      "actual": [
+        10.484375,
+        20.234375,
+        100.75,
+        50.5
+      ],
+      "expected": [
+        10.5,
+        20.25,
+        100.75,
+        50.5
+      ]
+    }
+  },
+  "integrity": {
+    "canvas": "noise",
+    "webgl": "noise",
+    "audio": "noise",
+    "rect": "noise"
+  }
+}

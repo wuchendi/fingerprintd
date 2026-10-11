@@ -1,0 +1,207 @@
+{
+  "meta": {
+    "label": "stock-headless-shell",
+    "mode": "stock",
+    "controller": "playwright-core",
+    "binary": "stock-chromium",
+    "persona": "native",
+    "seed": null,
+    "args": [],
+    "chromium_major": 149,
+    "captured_at": "2026-10-11T06:36:51.485Z"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36",
+  "stable_components": {
+    "colorDepth": 24,
+    "sessionStorage": true,
+    "localStorage": true,
+    "indexedDB": true,
+    "openDatabase": false,
+    "vendor": "Google Inc.",
+    "cookiesEnabled": true,
+    "colorGamut": "srgb",
+    "forcedColors": false,
+    "monochrome": 0,
+    "contrast": 0,
+    "reducedMotion": false,
+    "reducedTransparency": false,
+    "hdr": false,
+    "pdfViewerEnabled": false,
+    "architecture": 255,
+    "applePay": -1,
+    "audioBaseLatency": -2,
+    "dateTimeLocale": "en-US",
+    "fonts": [],
+    "audio": 124.04347527516074,
+    "device_memory": 32,
+    "cpu_cores": 8,
+    "timezone": "UTC",
+    "platform": "Linux x86_64",
+    "plugins": [],
+    "botd": {
+      "detection": {
+        "bot": true,
+        "botKind": "headless_chrome"
+      },
+      "signals": {
+        "process": {
+          "state": -1,
+          "error": "BotdError: window.process is undefined"
+        },
+        "android": {
+          "value": false,
+          "state": 0
+        },
+        "browserKind": {
+          "value": "chrome",
+          "state": 0
+        },
+        "browserEngineKind": {
+          "value": "chromium",
+          "state": 0
+        },
+        "documentFocus": {
+          "value": true,
+          "state": 0
+        },
+        "userAgent": {
+          "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36",
+          "state": 0
+        },
+        "appVersion": {
+          "value": "5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36",
+          "state": 0
+        },
+        "rtt": {
+          "value": 0,
+          "state": 0
+        },
+        "windowSize": {
+          "value": {
+            "outerWidth": 1280,
+            "outerHeight": 720,
+            "innerWidth": 1280,
+            "innerHeight": 720
+          },
+          "state": 0
+        },
+        "pluginsLength": {
+          "value": 0,
+          "state": 0
+        },
+        "pluginsArray": {
+          "value": true,
+          "state": 0
+        },
+        "errorTrace": {
+          "value": "TypeError: Cannot read properties of null (reading '0')\n    at getErrorTrace (http://localhost/harness.js:277:9)\n    at http://localhost/harness.js:60:22\n    at Array.map (<anonymous>)\n    at collect (http://localhost/harness.js:56:33)\n    at BotDetector.collect (http://localhost/harness.js:655:29)\n    at http://localhost/harness.js:3007:20\n    at async window.__fingerprintdHarness (http://localhost/harness.js:3183:33)\n    at async <anonymous>:329:30",
+          "state": 0
+        },
+        "productSub": {
+          "value": "20030107",
+          "state": 0
+        },
+        "windowExternal": {
+          "value": "[object External]",
+          "state": 0
+        },
+        "mimeTypesConsistent": {
+          "value": true,
+          "state": 0
+        },
+        "evalLength": {
+          "value": 33,
+          "state": 0
+        },
+        "webGL": {
+          "value": {
+            "vendor": "WebKit",
+            "renderer": "WebKit WebGL"
+          },
+          "state": 0
+        },
+        "webDriver": {
+          "value": true,
+          "state": 0
+        },
+        "languages": {
+          "value": [
+            [
+              "en-US"
+            ]
+          ],
+          "state": 0
+        },
+        "documentElementKeys": {
+          "value": [],
+          "state": 0
+        },
+        "functionBind": {
+          "value": "function bind() { [native code] }",
+          "state": 0
+        },
+        "distinctiveProps": {
+          "value": {
+            "awesomium": false,
+            "cef": false,
+            "cefsharp": false,
+            "coachjs": false,
+            "fminer": false,
+            "geb": false,
+            "nightmarejs": false,
+            "phantomas": false,
+            "phantomjs": false,
+            "rhino": false,
+            "selenium": false,
+            "webdriverio": false,
+            "webdriver": false,
+            "headless_chrome": false
+          },
+          "state": 0
+        },
+        "notificationPermissions": {
+          "value": true,
+          "state": 0
+        }
+      }
+    }
+  },
+  "integrity_measurements": {
+    "canvas": {
+      "diff_bytes": 0,
+      "total_bytes": 40000
+    },
+    "webgl": {
+      "distinct": [
+        "51,102,153,255"
+      ],
+      "expected": "51,102,153,255"
+    },
+    "audio": {
+      "distinct": [
+        0.5
+      ],
+      "expected": 0.5
+    },
+    "rect": {
+      "actual": [
+        10.5,
+        20.25,
+        100.75,
+        50.5
+      ],
+      "expected": [
+        10.5,
+        20.25,
+        100.75,
+        50.5
+      ]
+    }
+  },
+  "integrity": {
+    "canvas": "ok",
+    "webgl": "ok",
+    "audio": "ok",
+    "rect": "ok"
+  }
+}

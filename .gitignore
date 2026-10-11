@@ -202,3 +202,4 @@ tmp
 
 # local-only planning docs (PMA plan/task tracking) — kept out of the repo
 docs/
+.tmp/

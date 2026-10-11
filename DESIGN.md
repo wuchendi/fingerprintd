@@ -237,7 +237,10 @@ Req: {
   nonce: string,
   stable_components: { ... },   // raw values, no nonce mixed in
   probe?: string,               // hex(HMAC-SHA256(key, nonce)); required when the server enforces the probe
-  ts?: number                   // client Unix ms; checked only when the timestamp window is enforced
+  ts?: number,                  // client Unix ms; checked only when the timestamp window is enforced
+  integrity?: {                 // known-answer client integrity probe verdicts; top-level so they never enter matching
+    canvas: "ok" | "noise" | "unavailable", webgl: ..., audio: ..., rect: ...
+  }
 }
 200: {
   visitorId: string,
@@ -248,6 +251,8 @@ Req: {
   signals: {                    // for the risk engine; raw passive signals are never echoed
     ua_tls_consistent: boolean,
     ip_risk: "low" | "medium" | "high",
+    client_integrity: "ok" | "noise" | "unavailable",  // fused client integrity verdict
+    persona_coherence: "consistent" | "mismatch" | "unknown",  // UA OS family vs fonts, surfaced-only
     new_device_velocity: "low" | "medium" | "high"  // IP-keyed cross-session new-device rate
   }
 }
@@ -269,6 +274,35 @@ thresholds are tuning placeholders. It is a risk band surfaced alongside `ip_ris
 never folded into identity. The stateful native server computes the real band; the
 stateless edge Worker holds no cross-session store and always reports the neutral
 `low`, mirroring how it treats an empty frequency/agreement store as neutral.
+
+`client_integrity` fuses the SDK's four **known-answer integrity probes**: the
+collector asks the browser questions an unmodified Chromium answers exactly (a
+lossless canvas `toDataURL` → `getImageData` round-trip of opaque pixels, a flat
+WebGL clear, a `ConstantSourceNode` rendered offline, a `getBoundingClientRect` at
+1/64-px-representable offsets) and reports `ok` / `noise` / `unavailable` per probe.
+A fingerprint-noising (anti-detect) browser answers all four wrongly; it is the
+first **single-request** signal that observes such a browser, from inside the
+collector. The verdicts ride top-level in the request — never inside
+`stable_components` — so they cannot enter the `visitorId`; any `noise` wins, else
+any `ok`, else `unavailable` (absent field, missing APIs, malformed material —
+always neutral). The band is **surfaced-only by default**: legitimate privacy
+tooling (Brave farbling, canvas blockers) trips the same probes, so the `noise`
+confidence downgrade is opt-in (`integrity_penalty_enabled` /
+`FP_INTEGRITY_PENALTY_ENABLED`) until a real-traffic false-positive rate exists.
+Both stacks compute it through the shared core (`fp_core::signals::ClientIntegrity`).
+
+`persona_coherence` cross-checks the UA-claimed OS family against the collected
+`fonts` set: a Windows or macOS UA whose font set contains **none** of that OS's
+core fonts (a tiny curated list drawn from what FingerprintJS probes — Calibri,
+Segoe UI Light, MS UI Gothic, … / Helvetica Neue, Menlo, Gill Sans) reads
+`mismatch` — a borrowed persona, e.g. a cloaking browser presenting Windows from a
+Linux container that hides the host's fonts but adds none. Other OS families, a
+missing UA or a missing `fonts` array read `unknown`. Surfaced-only: it never moves
+`confidence` or the `visitorId`. Honest limit: an operator who installs the Windows
+font set (or a binary that spoofs font metrics) passes it; it raises cost, nothing
+more. The claimed UA is read from the top-level component spellings and, for the
+real SDK payload, from the BotD signal (`botd.signals.userAgent.value`) — the same
+fallback that lets the UA↔TLS cross-check (§4.2) see SDK traffic at all.
 
 ### DELETE /visitor/{id}
 

@@ -12,7 +12,10 @@
 
 use axum::http::HeaderMap;
 use fp_core::signals::compute;
-pub use fp_core::signals::{IpIntel, IpRisk, PassiveSignals, StaticIpIntel, TlsConsistency};
+pub use fp_core::signals::{
+    ClientIntegrity, IpIntel, IpRisk, PassiveSignals, PersonaCoherence, StaticIpIntel,
+    TlsConsistency, persona_coherence,
+};
 
 /// Trusted request header carrying the real client IP, injected by the Cloudflare
 /// edge. Standard Cloudflare header (architecture §4.2).

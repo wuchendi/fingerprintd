@@ -31,6 +31,17 @@ export type {
   FingerprintCollectorDeps,
 } from './fingerprint'
 export { createFingerprintCollector } from './fingerprint'
+export type {
+  Integrity,
+  IntegrityFn,
+  IntegrityMeasurements,
+  ProbeVerdict,
+} from './integrity'
+export {
+  collectIntegrity,
+  evaluateIntegrity,
+  measureIntegrity,
+} from './integrity'
 export type { ProbeFn } from './probe'
 export { initProbe, wasmProbeFn } from './probe'
 export {
@@ -87,6 +98,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
   }
   if (collected.ts !== undefined) request.ts = collected.ts
   if (collected.probe !== undefined) request.probe = collected.probe
+  if (collected.integrity !== undefined) request.integrity = collected.integrity
 
   const { result, bodyBytes, timestamp, signature } = await identify(
     baseUrl,

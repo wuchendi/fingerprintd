@@ -24,6 +24,9 @@ pub struct AppState {
     /// `false`, `/identify` ignores client-supplied `CF-Connecting-IP` /
     /// `cf-bot-management-ja4` copies (fail-closed).
     pub trust_edge_headers: bool,
+    /// Whether a `noise` client-integrity verdict lowers `/identify` confidence
+    /// (`Config::integrity_penalty_enabled`). The verdict is surfaced regardless.
+    pub integrity_penalty_enabled: bool,
     /// Nonce-probe verifier. `Some` only when a `probe_key` is configured;
     /// then `/challenge` advertises the transform and `/identify` requires a
     /// correct probe. `None` disables probe enforcement (default).
@@ -89,6 +92,7 @@ impl AppState {
             matcher: Arc::new(FuzzyStore::new_with_policy(policy)),
             nonce_ttl_secs: config.nonce_ttl_secs,
             trust_edge_headers: config.trust_edge_headers,
+            integrity_penalty_enabled: config.integrity_penalty_enabled,
             probe,
             signer,
             enforce_ts_window: config.enforce_ts_window,
@@ -105,6 +109,7 @@ impl fmt::Debug for AppState {
         f.debug_struct("AppState")
             .field("nonce_ttl_secs", &self.nonce_ttl_secs)
             .field("trust_edge_headers", &self.trust_edge_headers)
+            .field("integrity_penalty_enabled", &self.integrity_penalty_enabled)
             .field("probe_enabled", &self.probe.is_some())
             .field("signing_enabled", &self.signer.is_some())
             .field("enforce_ts_window", &self.enforce_ts_window)

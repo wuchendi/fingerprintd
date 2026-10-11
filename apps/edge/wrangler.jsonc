@@ -22,6 +22,10 @@
   "vars": {
     "FP_NONCE_TTL_SECS": "30",
     "FP_TS_SKEW_SECS": "30",
+    // Client-integrity `noise` verdicts are surfaced in `signals.client_integrity`
+    // always; set to "1" to let them lower confidence (off until the false-positive
+    // rate on real traffic is known — privacy tooling trips the same probes).
+    "FP_INTEGRITY_PENALTY_ENABLED": "0",
     // Allowed browser CORS origins (comma-separated; `*` = any). Set to the web
     // playground deployment so it can call /challenge and /identify cross-origin.
     "FP_CORS_ORIGINS": "https://fingerprintd.pages.dev",

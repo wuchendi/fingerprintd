@@ -211,7 +211,10 @@ Req: {
   nonce: string,
   stable_components: { ... },   // raw values, no nonce mixed in
   probe?: string,               // hex(HMAC-SHA256(key, nonce)); required when the server enforces the probe
-  ts?: number                   // client Unix ms; checked only when the timestamp window is enforced
+  ts?: number,                  // client Unix ms; checked only when the timestamp window is enforced
+  integrity?: {                 // known-answer client integrity probe verdicts; top-level so they never enter matching
+    canvas: "ok" | "noise" | "unavailable", webgl: ..., audio: ..., rect: ...
+  }
 }
 200: {
   visitorId: string,
@@ -221,7 +224,9 @@ Req: {
   collision_risk: boolean,
   signals: {                    // for the risk engine; raw passive signals are never echoed
     ua_tls_consistent: boolean,
-    ip_risk: "low" | "medium" | "high"
+    ip_risk: "low" | "medium" | "high",
+    client_integrity: "ok" | "noise" | "unavailable",  // 客户端完整性综合判定
+    persona_coherence: "consistent" | "mismatch" | "unknown"  // UA 操作系统族 vs 字体集,仅展示
   }
 }
 401: nonce expired / reused, or an enforced probe / timestamp check failed
@@ -232,6 +237,27 @@ Req: {
 (`hex(HMAC-SHA256(key, be64(issuedMs) ++ body))`)。
 
 被动信号(JA4/IP)由服务端从连接层获取(§4.2),**绝不**从客户端请求体接受。
+
+`client_integrity` 综合了 SDK 的四个**已知答案完整性探针**:采集器向浏览器提出几个未改动的
+Chromium 必然精确回答的问题(不透明像素的 canvas `toDataURL` → `getImageData` 无损往返、
+WebGL 纯色 clear、离线渲染的 `ConstantSourceNode`、1/64 px 可表示偏移处的
+`getBoundingClientRect`),逐探针报告 `ok` / `noise` / `unavailable`。指纹加噪(反检测)浏览器
+四个都答错 —— 这是第一个能在**单次请求**内、从采集器内部观察到此类浏览器的信号。判定以顶层
+字段随请求发送 —— 绝不放进 `stable_components` —— 因此不可能进入 `visitorId`;任一 `noise`
+即为 `noise`,否则任一 `ok` 即为 `ok`,否则为 `unavailable`(字段缺失、API 不可用、材料畸形 ——
+始终中性)。该分带**默认只做展示**:合法的隐私工具(Brave farbling、canvas 屏蔽器)会触发同样的
+探针,所以 `noise` 的置信度下调是可选项(`integrity_penalty_enabled` /
+`FP_INTEGRITY_PENALTY_ENABLED`),在拿到真实流量的误报率之前保持关闭。两个栈通过共享核心
+(`fp_core::signals::ClientIntegrity`)计算同一结果。
+
+`persona_coherence` 把 UA 声称的操作系统族和采集到的 `fonts` 集合做交叉检查:Windows 或 macOS
+的 UA,而字体集里**一个**该系统的核心字体都没有(取自 FingerprintJS 探测列表的极小精选集 ——
+Calibri、Segoe UI Light、MS UI Gothic…… / Helvetica Neue、Menlo、Gill Sans)即为
+`mismatch` —— 借来的人设,例如伪装浏览器在 Linux 容器里扮演 Windows,隐藏了宿主字体却没有添加任何
+Windows 字体。其他系统族、缺 UA 或缺 `fonts` 数组读作 `unknown`。仅展示:绝不改变 `confidence`
+或 `visitorId`。如实说明局限:安装了 Windows 字体集的操作者(或伪造字体度量的二进制)能通过;它只是
+提高成本。声称的 UA 从顶层组件的几种拼写读取,对真实 SDK 载荷则回退到 BotD 信号
+(`botd.signals.userAgent.value`)—— 同一回退也让 UA↔TLS 交叉检查(§4.2)第一次能看到 SDK 流量。
 
 ### DELETE /visitor/{id}
 

@@ -43,6 +43,10 @@ export const zh: Record<string, string> = {
   Signals: '信号',
   'UA / TLS consistent': 'UA / TLS 一致',
   'IP risk': 'IP 风险',
+  'Client integrity': '客户端完整性',
+  'Persona coherence': '人设一致性',
+  'known-answer probe verdicts (canvas / webgl / audio / rect) — a risk signal, never matching input':
+    '已知答案探针判定（canvas / webgl / audio / rect）—— 风险信号，绝不参与匹配',
   Yes: '是',
   No: '否',
   match: '匹配',

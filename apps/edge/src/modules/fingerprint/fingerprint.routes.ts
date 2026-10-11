@@ -83,7 +83,8 @@ const NEUTRAL_VELOCITY = {
 /**
  * `POST /identify` request body (architecture §5). `stable_components` is an arbitrary
  * component object (nested keys unrestricted); `probe`/`ts` are optional depth
- * checks. The schema is `.strict()` — any UNKNOWN top-level key (e.g. a stray
+ * checks; `integrity` carries the optional client-integrity probe verdicts
+ * (free-form object, top-level so it never enters matching). The schema is `.strict()` — any UNKNOWN top-level key (e.g. a stray
  * `challenge_response`) is REJECTED with a `400`, mirroring the native
  * `deny_unknown_fields`. This removes the former forward-compat
  * tolerance: a client must send exactly these fields.
@@ -94,6 +95,7 @@ const identifySchema = z
     stable_components: z.record(z.string(), z.unknown()),
     probe: z.string().optional(),
     ts: z.number().optional(),
+    integrity: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
 
@@ -161,7 +163,22 @@ export function fingerprintRoutes(deps: FingerprintDeps): Hono {
     // native (`crates/fingerprintd/src/lib.rs`). The verdict comes from the shared
     // WASM compute; the host only wires the trusted inputs and clamps.
     const verdict = edgeSignals(c.req.raw, components, deps)
-    const confidence = clamp(outcome.confidence + verdict.confidence_adjustment)
+    // Client-side known-answer integrity probes (shared WASM compute, exactly as
+    // native): surfaced always, fused only behind the opt-in penalty flag.
+    const integrity = deps.engine.clientIntegrity(
+      req.integrity,
+      deps.config.integrityPenaltyEnabled,
+    )
+    const confidence = clamp(
+      outcome.confidence +
+        verdict.confidence_adjustment +
+        integrity.confidence_adjustment,
+    )
+    // UA-claimed OS family vs the collected fonts (surfaced-only, shared WASM).
+    const persona = deps.engine.personaCoherence(
+      claimedUa(components),
+      components.fonts,
+    )
 
     // Cross-session new-device velocity, computed from the VELOCITY Durable
     // Object on a fresh device (native parity: `fp_core::fuzzy` records/bands only
@@ -177,6 +194,8 @@ export function fingerprintRoutes(deps: FingerprintDeps): Hono {
       signals: {
         ua_tls_consistent: verdict.ua_tls_consistent,
         ip_risk: verdict.ip_risk,
+        client_integrity: integrity.client_integrity,
+        persona_coherence: persona,
         new_device_velocity: velocity.new_device_velocity,
         new_device_velocity_ja4: velocity.new_device_velocity_ja4,
       },
@@ -295,7 +314,13 @@ function claimedUa(components: Record<string, unknown>): string | undefined {
     const value = components[key]
     if (typeof value === 'string') return value
   }
-  return undefined
+  // The real SDK emits no top-level UA (FingerprintJS has no such component);
+  // its UA rides under the BotD signals. Mirrors native `claimed_ua`.
+  const botd = components.botd as
+    | { signals?: { userAgent?: { value?: unknown } } }
+    | undefined
+  const fromBotd = botd?.signals?.userAgent?.value
+  return typeof fromBotd === 'string' ? fromBotd : undefined
 }
 
 /**

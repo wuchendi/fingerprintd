@@ -125,6 +125,7 @@ FP_PROBE_KEY=<key> bun run deploy:cf all   # 真正部署(需 wrangler login 或
 | `bind_addr`                  | `FINGERPRINTD_BIND_ADDR`                  | `127.0.0.1:8080` | 监听地址。                                                                  |
 | `nonce_ttl_secs`             | `FINGERPRINTD_NONCE_TTL_SECS`             | `30`             | 一次性 nonce 时效,作为 `expires_in` 通告。                                 |
 | `trust_edge_headers`         | `FINGERPRINTD_TRUST_EDGE_HEADERS`         | `false`          | 是否信任边缘注入的被动信号头(JA4/IP)。**Fail-closed:**仅在可信边缘之后开启;可直连的源站必须关闭。 |
+| `integrity_penalty_enabled`  | `FINGERPRINTD_INTEGRITY_PENALTY_ENABLED`  | `false`          | 是否允许 `noise` 的客户端完整性判定下调 `/identify` 置信度。判定始终以 `signals.client_integrity` 展示;在拿到真实流量误报率之前保持关闭(隐私工具会触发同样的探针)。 |
 | `probe_key`                  | `FINGERPRINTD_PROBE_KEY`                  | *(未设置)*       | 启用 nonce-probe 校验的 HMAC 密钥(纵深防御)。未设置则关闭。               |
 | `response_signing_key`       | `FINGERPRINTD_RESPONSE_SIGNING_KEY`       | *(未设置)*       | 启用 `/identify` 响应签名的 HMAC 密钥。未设置则关闭。                       |
 | `enforce_ts_window`          | `FINGERPRINTD_ENFORCE_TS_WINDOW`          | `false`          | 是否强制请求时间戳窗口。                                                    |
@@ -191,6 +192,7 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的命令,外加 
 - **SDK** —— `cd packages/client && bun run lint && bun run typecheck && bun run test`
 - **边缘 Worker** —— `cd apps/edge && bun run test`(identify + 签到:miniflare 里的路由 / 状态 / parity / assess)
 - **Playground** —— `cd apps/web && bun run typecheck && bun run build`
+- **红队 harness**（手动，需要 Docker）—— `bash scripts/redteam/cloak/run.sh` 在指纹加噪浏览器（CloakBrowser）和原生 Chromium 中运行真实的 SDK 采集器；精选捕获放在 `crates/fp-core/tests/fixtures/cloakbrowser/`，驱动 `crates/fp-core/tests/cloakbrowser_fixtures.rs`。见 [`scripts/redteam/cloak/README.md`](scripts/redteam/cloak/README.md)。
 
 ## 设计
 
