@@ -6,7 +6,7 @@ name: CI (ts)
 # rebuilds it from source and publishes it as an artifact the other jobs download
 # into `apps/edge/wasm` / `packages/client/wasm` BEFORE `bun install`. Install
 # must run with the WASM present because the repo-root `prepare` script builds the
-# `@cdlab/fingerprintd-client` SDK, which imports the vendored glue. A Rust-source
+# `@cdlab/fingerprintd` SDK, which imports the vendored glue. A Rust-source
 # change now flows through here (the `wasm` job rebuilds), so there is no separate
 # committed-vs-source drift guard. The `push` and `pull_request` triggers share
 # one path list via a YAML anchor.
@@ -122,8 +122,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       # apps/web consumes the built SDK — build it first (dist is gitignored).
-      - name: Build SDK (@cdlab/fingerprintd-client)
-        run: bun run --filter @cdlab/fingerprintd-client build
+      - name: Build SDK (@cdlab/fingerprintd)
+        run: bun run --filter @cdlab/fingerprintd build
 
       - name: Biome check
         working-directory: apps/web

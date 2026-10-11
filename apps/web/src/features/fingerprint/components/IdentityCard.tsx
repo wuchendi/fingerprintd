@@ -1,4 +1,4 @@
-import type { IdentifyResponse } from '@cdlab/fingerprintd-client'
+import type { IdentifyResponse } from '@cdlab/fingerprintd'
 import { useTranslation } from 'react-i18next'
 import {
   Card,

@@ -6,7 +6,7 @@ import {
   text,
 } from 'drizzle-orm/sqlite-core'
 
-// Edge D1 state schema — the externalized half of `fp_core`'s in-memory store
+// Edge D1 state schema — the externalized half of `fingerprintd_core`'s in-memory store
 // (DESIGN.md fuzzy-matching §3/§4/§9/§11). Mirrors the native
 // `FingerprintRecord` + `BlockingIndex`. The one-time nonce is the exception:
 // it needs atomic check-and-burn (D1's eventual replication cannot give it), so

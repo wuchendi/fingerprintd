@@ -24,7 +24,7 @@ cross-stack parity proof now run:
 
 The orchestration in `src/app.ts` (a Hono app) — derive blocking keys → recall
 candidates → score → persist per the verdict — is the **real edge host flow**,
-mirroring `fp_core`'s `identify`. `POST /identify` bodies are validated with Zod.
+mirroring `fingerprintd_core`'s `identify`. `POST /identify` bodies are validated with Zod.
 State is injected (`NonceStore` / `CandidateSource`), so the app is unchanged
 whether it runs on the Durable Object + D1 (Worker) or the in-isolate stubs (Node
 unit tests, or a bare `wrangler dev` with no bindings).

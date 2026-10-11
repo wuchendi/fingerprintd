@@ -60,7 +60,7 @@ jobs:
       # parity is a packages/client concern (rebuilt in deploy-web.yml).
       #
       # MUST run before `bun install`: the repo-root `prepare` script builds the
-      # `@cdlab/fingerprintd-client` SDK on install, which imports the vendored
+      # `@cdlab/fingerprintd` SDK on install, which imports the vendored
       # glue under `packages/client/wasm` — so we materialise both dirs first.
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable

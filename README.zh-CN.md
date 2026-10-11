@@ -88,8 +88,12 @@ curl -i http://127.0.0.1:8080/health
 
 用 SDK 从浏览器调用 —— 它集成 FingerprintJS + BotD,在 WASM 中计算 nonce probe 并提交。它从不派生 id:
 
+```bash
+npm i @cdlab/fingerprintd
+```
+
 ```ts
-import { createCollector, run } from '@cdlab/fingerprintd-client'
+import { createCollector, run } from '@cdlab/fingerprintd'
 
 const { identity } = await run({
   baseUrl: 'https://fp.example.com',
@@ -143,11 +147,11 @@ FP_PROBE_KEY=<key> bun run deploy:cf all   # 真正部署(需 wrangler login 或
 
 ```
 crates/
-  fp-core/          无框架的计算 + 存储 trait(共享引擎)
-  fingerprintd/     原生 Axum 服务(challenge / identify / 擦除)
-  fp-wasm/          Rust→WASM 的 probe 核心 + 边缘引擎
+  fp-core/          无框架的计算 + 存储 trait(共享引擎)—— crates.io `fingerprintd-core`
+  fingerprintd/     原生 Axum 服务(challenge / identify / 擦除)—— crates.io `fingerprintd`
+  fp-wasm/          Rust→WASM 的 probe 核心 + 边缘引擎(不发布;作为构建产物内嵌)
 packages/
-  client/           TypeScript 浏览器 SDK(FingerprintJS/BotD + 采集器)
+  client/           TypeScript 浏览器 SDK(FingerprintJS/BotD + 采集器)—— npm `@cdlab/fingerprintd`
 apps/
   edge/             Cloudflare Worker:/identify + /checkin/assess(WASM 引擎 + Durable Object/D1)
   web/              challenge / identify / 签到流程的 React/Vite playground
@@ -193,6 +197,31 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的命令,外加 
 - **边缘 Worker** —— `cd apps/edge && bun run test`(identify + 签到:miniflare 里的路由 / 状态 / parity / assess)
 - **Playground** —— `cd apps/web && bun run typecheck && bun run build`
 - **红队 harness**（手动，需要 Docker）—— `bash scripts/redteam/cloak/run.sh` 在指纹加噪浏览器（CloakBrowser）和原生 Chromium 中运行真实的 SDK 采集器；精选捕获放在 `crates/fp-core/tests/fixtures/cloakbrowser/`，驱动 `crates/fp-core/tests/cloakbrowser_fixtures.rs`。见 [`scripts/redteam/cloak/README.md`](scripts/redteam/cloak/README.md)。
+
+## 发布
+
+共发布三个产物,共用一个版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致):
+
+| 产物 | 仓库 | 安装 |
+|---|---|---|
+| 浏览器 SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
+| 计算引擎 | crates.io `fingerprintd-core` | `cargo add fingerprintd-core` |
+| 原生服务 | crates.io `fingerprintd` | `cargo install fingerprintd` |
+
+`crates/fp-wasm` 不发布:它是带编译期 probe key 的构建产物,内嵌进 SDK 与边缘 Worker。npm 包里的 `.wasm` 是开发密钥构建 —— 启用 probe 校验的部署需用自己的密钥重建(见 [`packages/client/README.md`](packages/client/README.md))。
+
+发布由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 执行:同时提升两个清单里的版本号,再推送同名 tag:
+
+```bash
+git tag v0.0.1 && git push origin v0.0.1
+```
+
+工作流校验 tag、重建 WASM、测试并构建 SDK、发布到 npm,然后把 `fingerprintd-core` 与 `fingerprintd` 发布到 crates.io。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:
+
+```bash
+bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)
+cargo publish --workspace --exclude fp-wasm --locked
+```
 
 ## 设计
 

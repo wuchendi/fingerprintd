@@ -2,7 +2,7 @@
  * The one-time nonce store as a Durable Object.
  *
  * The native server keeps nonces in an in-process map with atomic check-and-burn
- * (`fp_core::nonce`). A Worker isolate cannot: it is ephemeral and unshared, and
+ * (`fingerprintd_core::nonce`). A Worker isolate cannot: it is ephemeral and unshared, and
  * D1 (or KV) replicates eventually with no atomic compare-and-delete, so a
  * replayed nonce could be accepted twice in the window between read and delete.
  * A Durable Object is the one edge primitive with the needed guarantee — a

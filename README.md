@@ -88,8 +88,12 @@ Log level is controlled by `RUST_LOG` (defaults to `info`).
 
 Call it from a browser with the SDK — it integrates FingerprintJS + BotD, computes the nonce probe in WASM, and submits. It never derives an id:
 
+```bash
+npm i @cdlab/fingerprintd
+```
+
 ```ts
-import { createCollector, run } from '@cdlab/fingerprintd-client'
+import { createCollector, run } from '@cdlab/fingerprintd'
 
 const { identity } = await run({
   baseUrl: 'https://fp.example.com',
@@ -143,11 +147,11 @@ The `probe_key` / `response_signing_key` / `admin_key` controls are **fail-close
 
 ```
 crates/
-  fp-core/          framework-free compute + storage traits (the shared engine)
-  fingerprintd/     native Axum server (challenge / identify / erasure)
-  fp-wasm/          Rust→WASM probe core + edge engine
+  fp-core/          framework-free compute + storage traits (the shared engine) — crates.io `fingerprintd-core`
+  fingerprintd/     native Axum server (challenge / identify / erasure) — crates.io `fingerprintd`
+  fp-wasm/          Rust→WASM probe core + edge engine (not published; vendored build output)
 packages/
-  client/           TypeScript browser SDK (FingerprintJS/BotD + collector)
+  client/           TypeScript browser SDK (FingerprintJS/BotD + collector) — npm `@cdlab/fingerprintd`
 apps/
   edge/             Cloudflare Worker: /identify + /checkin/assess (WASM engine + Durable Object/D1)
   web/              React/Vite playground for the challenge / identify / check-in flow
@@ -193,6 +197,31 @@ Per-component tooling:
 - **Edge Worker** — `cd apps/edge && bun run test` (identify + check-in: router / state / parity / assess in miniflare)
 - **Playground** — `cd apps/web && bun run typecheck && bun run build`
 - **Red-team harness** (manual, needs Docker) — `bash scripts/redteam/cloak/run.sh` runs the real SDK collector inside a fingerprint-noising browser (CloakBrowser) and stock Chromium; curated captures live in `crates/fp-core/tests/fixtures/cloakbrowser/` and drive `crates/fp-core/tests/cloakbrowser_fixtures.rs`. See [`scripts/redteam/cloak/README.md`](scripts/redteam/cloak/README.md).
+
+## Publishing
+
+Three artifacts are published, all from one version (the Cargo workspace version and `packages/client/package.json` must agree):
+
+| Artifact | Registry | Install |
+|---|---|---|
+| Browser SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
+| Compute engine | crates.io `fingerprintd-core` | `cargo add fingerprintd-core` |
+| Native server | crates.io `fingerprintd` | `cargo install fingerprintd` |
+
+`crates/fp-wasm` is not published: it is a build output with a compile-time probe key, vendored into the SDK and the edge Worker. The `.wasm` inside the npm package is the dev-keyed build — a deployment that enforces the probe rebuilds it with its own key (see [`packages/client/README.md`](packages/client/README.md)).
+
+Releases run from [`.github/workflows/release.yml`](.github/workflows/release.yml): bump the version in both manifests, then push a matching tag:
+
+```bash
+git tag v0.0.1 && git push origin v0.0.1
+```
+
+The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd-core` and `fingerprintd` to crates.io. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:
+
+```bash
+bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)
+cargo publish --workspace --exclude fp-wasm --locked
+```
 
 ## Design
 

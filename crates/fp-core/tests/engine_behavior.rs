@@ -3,7 +3,7 @@
 //! `Decision`, `MatchOutcome`, `VelocityBand`). The private-internal unit tests
 //! stay inline in `src/fuzzy/engine.rs`.
 
-use fp_core::fuzzy::{Decision, FuzzyStore, VelocityBand};
+use fingerprintd_core::fuzzy::{Decision, FuzzyStore, VelocityBand};
 use serde_json::{Value, json};
 
 /// A full, high-signal probe (8 components across all three kinds).

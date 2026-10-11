@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prepare.sh — runs during `bun install` (the repo-root `prepare` lifecycle).
 # Builds the workspace packages (the SDK) so a fresh install yields a
-# ready-to-consume @cdlab/fingerprintd-client.
+# ready-to-consume @cdlab/fingerprintd.
 #
 # The SDK imports the vendored WASM under packages/client/wasm, which is a BUILD
 # ARTIFACT and NOT committed. When it is missing (fresh clone / after clean):

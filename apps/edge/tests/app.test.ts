@@ -265,7 +265,7 @@ describe('response signing', () => {
   })
 
   it('reproduces the shared signing vector', () => {
-    // Ties the edge signer to the native `fp_core::signing::ResponseSigner`
+    // Ties the edge signer to the native `fingerprintd_core::signing::ResponseSigner`
     // (crates/fp-wasm `engine_sign_matches_shared_vector`): same signing key,
     // same timestamp + body, same hex — the response-signing analogue of the
     // probe parity vector, proving the signing Worker Secret path is identical.

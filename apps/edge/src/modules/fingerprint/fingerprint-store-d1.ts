@@ -1,6 +1,6 @@
 /**
  * The D1-backed fingerprint library: stage-one candidate recall plus
- * drift persistence, the externalized form of `fp_core::fuzzy`'s in-memory
+ * drift persistence, the externalized form of `fingerprintd_core::fuzzy`'s in-memory
  * `RecordStore` + `BlockingIndex`.
  *
  * Two tables (see `src/db/schema.ts`): `templates` holds each visitor's RAW
@@ -22,7 +22,7 @@ import type { Candidate, CandidateSource } from '../../lib/state'
 import type { ScoreOutcome } from '../../lib/types'
 
 /**
- * Per-recall candidate cap, mirroring `fp_core::fuzzy::blocking::DEFAULT_MAX_BLOCK`.
+ * Per-recall candidate cap, mirroring `fingerprintd_core::fuzzy::blocking::DEFAULT_MAX_BLOCK`.
  * A hot blocking key (e.g. stock iPhone Safari) unions into a huge, low-information
  * block; leaving it unbounded means every candidate is re-scored in-isolate by WASM
  * plus its D1 read cost (P99 blowup). Bounding recall matches the native index,

@@ -114,7 +114,7 @@ export interface Signals {
 
 /**
  * Passive-signal verdict returned by the shared WASM `passive_signals` export
- * (`fp_core::signals`). The host maps the boolean + band into {@link Signals} and
+ * (`fingerprintd_core::signals`). The host maps the boolean + band into {@link Signals} and
  * fuses `confidence_adjustment` into `/identify` confidence — never the visitorId.
  */
 export interface PassiveVerdict {
@@ -128,7 +128,7 @@ export interface PassiveVerdict {
 
 /**
  * Reply of the shared WASM `client_integrity` export
- * (`fp_core::signals::ClientIntegrity`): the fused verdict plus the confidence
+ * (`fingerprintd_core::signals::ClientIntegrity`): the fused verdict plus the confidence
  * delta (`0` unless the penalty is enabled and the verdict is `noise`).
  */
 export interface IntegrityVerdict {
@@ -157,7 +157,7 @@ export interface IdentifyResponse {
 
 /**
  * The raw verdict returned by the WASM engine's `score` (snake_case, from
- * `fp_core::fuzzy::MatchOutcome`). The host maps it into {@link IdentifyResponse},
+ * `fingerprintd_core::fuzzy::MatchOutcome`). The host maps it into {@link IdentifyResponse},
  * dropping the diagnostic-only `score` / `compared_components` fields and adding
  * the host-owned `signals`.
  */

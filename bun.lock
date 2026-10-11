@@ -32,7 +32,7 @@
       "version": "1.0.0",
       "dependencies": {
         "@base-ui/react": "^1.9.0",
-        "@cdlab/fingerprintd-client": "workspace:*",
+        "@cdlab/fingerprintd": "workspace:*",
         "@fingerprintjs/fingerprintjs": "catalog:",
         "@fontsource-variable/inter": "^5.3.0",
         "@fontsource-variable/jetbrains-mono": "^5.3.0",
@@ -65,7 +65,7 @@
       },
     },
     "packages/client": {
-      "name": "@cdlab/fingerprintd-client",
+      "name": "@cdlab/fingerprintd",
       "version": "1.0.0",
       "dependencies": {
         "@fingerprintjs/botd": "^2.0.0",
@@ -180,7 +180,7 @@
 
     "@bramus/specificity": ["@bramus/specificity@2.4.2", "", { "dependencies": { "css-tree": "^3.0.0" }, "bin": { "specificity": "bin/cli.js" } }, "sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw=="],
 
-    "@cdlab/fingerprintd-client": ["@cdlab/fingerprintd-client@workspace:packages/client"],
+    "@cdlab/fingerprintd": ["@cdlab/fingerprintd@workspace:packages/client"],
 
     "@cdlab/fingerprintd-edge": ["@cdlab/fingerprintd-edge@workspace:apps/edge"],
 

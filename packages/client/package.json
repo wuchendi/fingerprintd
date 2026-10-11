@@ -1,10 +1,13 @@
 {
-  "name": "@cdlab/fingerprintd-client",
-  "version": "1.0.0",
+  "name": "@cdlab/fingerprintd",
+  "version": "0.0.1",
   "description": "Browser SDK for the fingerprintd challenge/identify flow (collect-only; the server judges).",
   "type": "module",
-  "private": true,
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "keywords": [
     "fingerprinting",
     "device-fingerprint",

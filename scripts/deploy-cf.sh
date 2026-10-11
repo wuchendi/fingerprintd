@@ -85,7 +85,7 @@ deploy_edge() {
 
 deploy_web() {
   echo "==> [web] build SDK + app"
-  bun run --filter @cdlab/fingerprintd-client build
+  bun run --filter @cdlab/fingerprintd build
   (cd apps/web && bun run build)
   if [ -n "$DRY" ]; then
     echo "==> [web] dry-run: build only (Cloudflare Pages has no dry-run) — skipping upload"

@@ -16,7 +16,7 @@ pub mod state;
 // The framework-free compute and storage contracts live in `fp-core`; re-export
 // them at their original paths so the HTTP layer (and its tests) reference the
 // engine, nonce store, probe, and signer unchanged.
-pub use fp_core::{fuzzy, nonce, probe, signing};
+pub use fingerprintd_core::{fuzzy, nonce, probe, signing};
 
 use axum::{
     Json, Router,
