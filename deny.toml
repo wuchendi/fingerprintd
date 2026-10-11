@@ -8,7 +8,7 @@ yanked  = "deny"
 [bans]
 multiple-versions = "allow" # transitive duplicates are out of scope for the skeleton
 wildcards         = "deny"
-# The intra-workspace `fp-core` path dependency carries no version req; exempt
+# The intra-workspace `fingerprintd-core` path dependency is a path dep; exempt
 # local path deps from the wildcard ban while still catching registry wildcards.
 allow-wildcard-paths = true
 

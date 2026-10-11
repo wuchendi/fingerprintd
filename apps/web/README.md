@@ -2,7 +2,7 @@
 
 Browser **playground / debug console** for the
 [`fingerprintd`](../../crates/fingerprintd) challenge/identify flow. It drives
-the collect-only [`@cdlab/fingerprintd-client`](../../packages/client) SDK against a
+the collect-only [`@cdlab/fingerprintd`](../../packages/client) SDK against a
 server you point it at and visualizes both what the client **sends** and what
 the server **judges** — the client never derives an id, the server is
 authoritative.
@@ -35,7 +35,7 @@ React 19 · TypeScript · Vite · Tailwind CSS v4 · shadcn/ui (base-nova) +
 bun install
 # The playground consumes the built SDK — build it once first (its dist/ is
 # gitignored), or run the workspace build from the repo root.
-bun run --filter @cdlab/fingerprintd-client build
+bun run --filter @cdlab/fingerprintd build
 
 bun run dev        # dev server (nsl → http://fingerprintd-web.localhost:<port>)
 bun run typecheck  # tsc --noEmit
@@ -53,7 +53,7 @@ is handled by `public/_redirects` (`/* /index.html 200`), copied into `dist/`
 at build time.
 
 ```bash
-bun run --filter @cdlab/fingerprintd-client build   # SDK dist (gitignored)
+bun run --filter @cdlab/fingerprintd build   # SDK dist (gitignored)
 bun run build                                 # SPA -> ./dist
 bun run deploy                                # wrangler pages deploy --branch main
 ```

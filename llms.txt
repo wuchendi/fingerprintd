@@ -15,10 +15,10 @@ Primary docs:
 
 ## What it is
 
-- One compute engine (`crates/fp-core`), two deployment targets: a native Axum
+- One compute engine (`crates/fp-core`, published as `fingerprintd-core`), two deployment targets: a native Axum
   server (`crates/fingerprintd`) and a Cloudflare Worker (`apps/edge`, running
   `fp-core` compiled to WASM). A client works against either unchanged.
-- A browser SDK (`@cdlab/fingerprintd-client`) wraps FingerprintJS/BotD, computes
+- A browser SDK (`@cdlab/fingerprintd`) wraps FingerprintJS/BotD, computes
   the nonce freshness probe in WASM, and submits — it never derives an id.
 - A browser playground (`apps/web`) drives the full flow and visualizes what the
   client sends vs. what the server judges.
@@ -83,7 +83,7 @@ Log level is `RUST_LOG` (default `info`).
 ## Call it from a browser
 
 ```ts
-import { createCollector, run } from '@cdlab/fingerprintd-client'
+import { createCollector, run } from '@cdlab/fingerprintd'
 
 const { identity } = await run({
   baseUrl: 'https://fp.example.com',

@@ -1,4 +1,4 @@
-import type { ChallengeResponse, Collected } from '@cdlab/fingerprintd-client'
+import type { ChallengeResponse, Collected } from '@cdlab/fingerprintd'
 import { useTranslation } from 'react-i18next'
 import { Badge } from '@/shared/components/ui/badge'
 import {

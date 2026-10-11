@@ -72,7 +72,7 @@ pub struct Config {
     /// `FINGERPRINTD_TRUST_EDGE_HEADERS`.
     pub trust_edge_headers: bool,
     /// Whether the client's known-answer integrity probe verdicts (the request's
-    /// top-level `integrity`, see `fp_core::signals::ClientIntegrity`) may lower
+    /// top-level `integrity`, see `fingerprintd_core::signals::ClientIntegrity`) may lower
     /// `/identify` confidence. The verdict is **always surfaced** as
     /// `signals.client_integrity`; this flag only enables the `noise` downgrade.
     /// Left `false` by default: legitimate privacy tooling (Brave farbling, canvas

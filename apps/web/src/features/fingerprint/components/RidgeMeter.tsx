@@ -1,4 +1,4 @@
-import type { IdentifyResponse } from '@cdlab/fingerprintd-client'
+import type { IdentifyResponse } from '@cdlab/fingerprintd'
 import { cn } from '@/shared/lib/utils'
 
 const verdictColor: Record<IdentifyResponse['decision'], string> = {

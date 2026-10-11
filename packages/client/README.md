@@ -1,4 +1,4 @@
-# @cdlab/fingerprintd-client
+# @cdlab/fingerprintd
 
 Browser SDK for the [`fingerprintd`](../../crates/fingerprintd) challenge/identify
 flow. It **collects** client-observed evidence and submits it; the **server**
@@ -30,8 +30,12 @@ stay in their lanes:
 
 ## Usage
 
+```bash
+npm i @cdlab/fingerprintd
+```
+
 ```ts
-import { createCollector, run } from '@cdlab/fingerprintd-client'
+import { createCollector, run } from '@cdlab/fingerprintd'
 
 const { identity, signatureValid } = await run({
   baseUrl: 'https://fp.example.com',
@@ -72,8 +76,10 @@ probe("fixed-nonce-000") === "ad83144894f917b94072c2f7b3246af66d3bc5a450562ccf36
 ```
 
 > **The vendored `wasm/fp_wasm_bg.wasm` is a DEV build keyed with the vector's
-> `test-probe-secret`**, so the parity test can run without a browser. A real
-> deployment must rebuild it with the server's key (see below).
+> `test-probe-secret`**, so the parity test can run without a browser. The
+> `.wasm` shipped in the npm package is that same dev-keyed build — its key is
+> public by construction. A real deployment must rebuild it with the server's
+> key (see below) and hand the rebuilt module to `initProbe()`.
 
 ## Environment limit — no real browser here
 

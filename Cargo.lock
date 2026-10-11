@@ -230,7 +230,7 @@ version = "1.0.0"
 dependencies = [
  "axum",
  "figment",
- "fp-core",
+ "fingerprintd-core",
  "hex",
  "serde",
  "serde_json",
@@ -242,7 +242,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fp-core"
+name = "fingerprintd-core"
 version = "1.0.0"
 dependencies = [
  "async-trait",
@@ -260,7 +260,7 @@ dependencies = [
 name = "fp-wasm"
 version = "1.0.0"
 dependencies = [
- "fp-core",
+ "fingerprintd-core",
  "hex",
  "hmac",
  "serde",

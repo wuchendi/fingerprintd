@@ -11,15 +11,15 @@ import type {
   Collected,
   IdentifyRequest,
   IdentifyResponse,
-} from '@cdlab/fingerprintd-client'
+} from '@cdlab/fingerprintd'
 import {
   createCollector,
   getChallenge,
   identify,
   initProbe,
   verifySignature,
-} from '@cdlab/fingerprintd-client'
-import wasmUrl from '@cdlab/fingerprintd-client/wasm?url'
+} from '@cdlab/fingerprintd'
+import wasmUrl from '@cdlab/fingerprintd/wasm?url'
 import FingerprintJS from '@fingerprintjs/fingerprintjs'
 
 /**

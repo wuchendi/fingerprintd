@@ -1,5 +1,5 @@
 [package]
-name        = "fp-core"
+name        = "fingerprintd-core"
 description = "Framework-free device-fingerprinting compute and storage traits shared by the fingerprintd server and its edge WASM engine."
 version.workspace      = true
 edition.workspace      = true
@@ -8,15 +8,16 @@ authors.workspace      = true
 license.workspace      = true
 repository.workspace   = true
 homepage.workspace     = true
+readme      = "../../README.md"
 keywords    = ["fingerprinting", "anti-fraud", "device-id", "fuzzy-matching"]
 categories  = ["algorithms", "authentication"]
-publish.workspace      = true
+publish     = true
 
 [lints]
 workspace = true
 
 [lib]
-name = "fp_core"
+name = "fingerprintd_core"
 path = "src/lib.rs"
 
 [features]

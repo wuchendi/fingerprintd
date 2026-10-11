@@ -8,9 +8,10 @@ authors.workspace      = true
 license.workspace      = true
 repository.workspace   = true
 homepage.workspace     = true
+readme      = "../../README.md"
 keywords    = ["fingerprinting", "anti-fraud", "bot-detection", "device-id", "security"]
 categories  = ["web-programming::http-server", "authentication"]
-publish.workspace      = true
+publish     = true
 
 [lints]
 workspace = true
@@ -24,7 +25,7 @@ name = "fingerprintd"
 path = "src/lib.rs"
 
 [dependencies]
-fp-core = { path = "../fp-core" }
+fingerprintd-core = { path = "../fp-core", version = "1.0.0" }
 # `time` (additive over the workspace features) powers the retention sweep's
 # `tokio::time::interval`; the rest come from the workspace dep.
 tokio = { workspace = true, features = ["time"] }

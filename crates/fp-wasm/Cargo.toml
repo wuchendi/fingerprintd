@@ -10,7 +10,7 @@ repository.workspace   = true
 homepage.workspace     = true
 keywords    = ["fingerprinting", "wasm", "anti-fraud", "device-id"]
 categories  = ["wasm", "algorithms"]
-publish.workspace      = true
+publish     = false
 
 [lib]
 # `cdylib` produces the wasm module for `wasm-pack`; `rlib` keeps the crate
@@ -30,7 +30,7 @@ wasm-bindgen = "0.2"
 # The framework-free core, without its `rng` feature: the edge host uses only
 # the deterministic, seed-derived compute, so `rand`/`getrandom` (unsupported on
 # `wasm32-unknown-unknown`) stays out of the wasm build graph.
-fp-core = { path = "../fp-core", default-features = false }
+fingerprintd-core = { path = "../fp-core", version = "1.0.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hmac = { workspace = true }

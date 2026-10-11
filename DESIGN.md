@@ -289,7 +289,7 @@ always neutral). The band is **surfaced-only by default**: legitimate privacy
 tooling (Brave farbling, canvas blockers) trips the same probes, so the `noise`
 confidence downgrade is opt-in (`integrity_penalty_enabled` /
 `FP_INTEGRITY_PENALTY_ENABLED`) until a real-traffic false-positive rate exists.
-Both stacks compute it through the shared core (`fp_core::signals::ClientIntegrity`).
+Both stacks compute it through the shared core (`fingerprintd_core::signals::ClientIntegrity`).
 
 `persona_coherence` cross-checks the UA-claimed OS family against the collected
 `fonts` set: a Windows or macOS UA whose font set contains **none** of that OS's
@@ -360,7 +360,7 @@ run on both sides.
 | Runtime | Axum / Tokio, long-lived process | Cloudflare Worker (V8 isolate, per-request) |
 | Nonce store | in-memory, single-use + TTL, bounded + reaped | Durable Object (atomic check-and-burn + TTL alarm) |
 | Fingerprint library | in-memory inverted index + frequency table, bounded/evicting | D1 (SQLite): `templates` + `blocking_index` |
-| Compute | native `fp_core` | `fp_core` compiled to WASM (`crates/fp-wasm`) |
+| Compute | native `fingerprintd_core` | `fingerprintd_core` compiled to WASM (`crates/fp-wasm`) |
 | Passive signals | full JA4/IP fusion (§4.2) | neutral by default; JA4/IP behind a trusted edge |
 | Secrets | config / env | Worker Secrets |
 

@@ -5,8 +5,8 @@
  * name and output dir from here. Deploys to the same account as the edge Worker
  * via `.github/workflows/deploy-web.yml` (or `bun run deploy`).
  *
- * Build first: `bun run build` produces ./dist (it needs the @cdlab/fingerprintd-client
- * dist too — `bun run --filter @cdlab/fingerprintd-client build`). SPA history
+ * Build first: `bun run build` produces ./dist (it needs the @cdlab/fingerprintd
+ * dist too — `bun run --filter @cdlab/fingerprintd build`). SPA history
  * fallback is handled by ./public/_redirects (copied into ./dist by Vite).
  */
 {

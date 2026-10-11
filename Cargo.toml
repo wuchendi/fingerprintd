@@ -10,7 +10,6 @@ authors      = ["cdlab"]
 license      = "Apache-2.0"
 repository   = "https://github.com/WuChenDi/fingerprintd"
 homepage     = "https://github.com/WuChenDi/fingerprintd"
-publish      = false
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
