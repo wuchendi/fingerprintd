@@ -67,11 +67,13 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       # npm >= 11.5 (Node 24) is required for OIDC trusted publishing / provenance.
+      # No `registry-url` here: setup-node would then always write an
+      # `_authToken` (a placeholder when NODE_AUTH_TOKEN is unset), which breaks
+      # the OIDC path. Auth is configured in the publish step instead.
       - name: Install Node (npm CLI)
         uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -103,12 +105,17 @@ jobs:
 
       - name: Publish to npm
         working-directory: packages/client
-        # Secret scoped to this step only. Token present → classic token
-        # publish; absent → npm's OIDC flow (requires the trusted publisher to be
-        # configured for this workflow).
+        # Secret scoped to this step only. Token present → classic token publish
+        # (the token must be allowed to bypass 2FA, or the account's 2FA policy
+        # must not require an OTP for automation); absent → npm's OIDC flow
+        # (requires the trusted publisher to be configured for this workflow).
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$HOME/.npmrc"
+          fi
+          npm publish
 
   crates:
     name: crates.io (fingerprintd-core, fingerprintd)
