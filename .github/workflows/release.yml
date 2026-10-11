@@ -57,8 +57,6 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -102,10 +100,11 @@ jobs:
 
       - name: Publish to npm
         working-directory: packages/client
+        # Secret scoped to this step only. Token present → classic token
+        # publish; absent → npm's OIDC flow (requires the trusted publisher to be
+        # configured for this workflow).
         env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
-        # Token present → classic token publish; absent → npm's OIDC flow
-        # (requires the trusted publisher to be configured for this workflow).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish
 
   crates:
@@ -114,7 +113,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # Boolean only — the token itself is scoped to the publish step.
+      HAS_CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -125,7 +125,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Authenticate with crates.io (OIDC trusted publishing)
-        if: env.CARGO_REGISTRY_TOKEN == ''
+        if: env.HAS_CARGO_TOKEN == 'false'
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
@@ -133,5 +133,5 @@ jobs:
       # the index between them (cargo >= 1.90).
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ env.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
         run: cargo publish --workspace --exclude fp-wasm --locked
