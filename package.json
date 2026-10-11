@@ -26,11 +26,11 @@
       "apps/*"
     ],
     "catalog": {
-      "@fingerprintjs/fingerprintjs": "^5.2.0",
-      "@types/node": "^26.1.2",
+      "@fingerprintjs/fingerprintjs": "^5.3.0",
+      "@types/node": "^26.6.5",
       "typescript": "^7.0.2",
-      "vitest": "^4.1.10",
-      "wrangler": "^4.116.0"
+      "vitest": "^4.1.11",
+      "wrangler": "^4.149.0"
     }
   },
   "scripts": {
@@ -48,7 +48,7 @@
     "prepare": "bash scripts/prepare.sh"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.6"
+    "@biomejs/biome": "^2.5.15"
   },
   "overrides": {
     "fast-uri": "^3.1.8",

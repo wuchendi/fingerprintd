@@ -33,16 +33,16 @@
     "cf:remotedb": "wrangler d1 migrations apply fingerprintd --remote"
   },
   "dependencies": {
-    "@hono/zod-validator": "^0.9.0",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.32",
-    "zod": "^4.4.3"
+    "@hono/zod-validator": "^0.9.1",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.13",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.19.1",
-    "@cloudflare/workers-types": "^5.20260731.1",
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "@cloudflare/workers-types": "^5.20261011.1",
     "@types/node": "catalog:",
-    "drizzle-kit": "^0.31.10",
+    "drizzle-kit": "^0.31.11",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
