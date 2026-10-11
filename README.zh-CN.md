@@ -216,7 +216,7 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的命令,外加 
 git tag v0.0.1 && git push origin v0.0.1
 ```
 
-工作流校验 tag、重建 WASM、测试并构建 SDK、发布到 npm,然后把 `fingerprintd-core` 与 `fingerprintd` 发布到 crates.io。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:
+工作流校验 tag、重建 WASM、测试并构建 SDK、发布到 npm,然后把 `fingerprintd-core` 与 `fingerprintd` 发布到 crates.io,最后为该 tag 创建带自动生成说明的 GitHub Release。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:
 
 ```bash
 bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)

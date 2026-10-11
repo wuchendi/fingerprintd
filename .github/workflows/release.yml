@@ -21,6 +21,9 @@ name: Release (npm + crates.io)
 # The npm artifact ships the DEV-keyed probe WASM (scripts/build-wasm.sh); a
 # deployment that enforces the probe rebuilds the WASM with its own key and
 # passes it to `initProbe()` — see packages/client/README.md.
+#
+# Once both registries accept the version, a GitHub Release is created for the
+# tag with auto-generated notes (job `github-release`, contents: write).
 
 on:
   push:
@@ -135,3 +138,20 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
         run: cargo publish --workspace --exclude fp-wasm --locked
+
+  github-release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [npm, crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create release for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

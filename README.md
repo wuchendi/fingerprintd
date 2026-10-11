@@ -216,7 +216,7 @@ Releases run from [`.github/workflows/release.yml`](.github/workflows/release.ym
 git tag v0.0.1 && git push origin v0.0.1
 ```
 
-The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd-core` and `fingerprintd` to crates.io. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:
+The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd-core` and `fingerprintd` to crates.io, and finally creates a GitHub Release for the tag with generated notes. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:
 
 ```bash
 bun run build:wasm && bun install && (cd packages/client && bun run build && npm publish)
