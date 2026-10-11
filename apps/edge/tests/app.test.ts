@@ -131,6 +131,8 @@ describe('POST /identify', () => {
     expect(body.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
+      client_integrity: 'unavailable',
+      persona_coherence: 'unknown',
       new_device_velocity: 'low',
       new_device_velocity_ja4: 'low',
     })
@@ -341,6 +343,8 @@ describe('passive signals (edge JA4/IP fusion)', () => {
     expect(degraded.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
+      client_integrity: 'unavailable',
+      persona_coherence: 'unknown',
       new_device_velocity: 'low',
       new_device_velocity_ja4: 'low',
     })
@@ -410,6 +414,8 @@ describe('passive signals (edge JA4/IP fusion)', () => {
     expect(forged.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
+      client_integrity: 'unavailable',
+      persona_coherence: 'unknown',
       new_device_velocity: 'low',
       new_device_velocity_ja4: 'low',
     })
@@ -505,6 +511,8 @@ describe('ASN IP-risk band (edge cf enrichment)', () => {
     expect(body.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
+      client_integrity: 'unavailable',
+      persona_coherence: 'unknown',
       new_device_velocity: 'low',
       new_device_velocity_ja4: 'low',
     })
@@ -740,5 +748,115 @@ describe('CORS (browser playground)', () => {
       makeDeps(),
     )
     expect(resp.headers.get('access-control-allow-origin')).toBeNull()
+  })
+})
+
+describe('client integrity probes (top-level `integrity`, shared WASM verdict)', () => {
+  const allNoise = {
+    canvas: 'noise',
+    webgl: 'noise',
+    audio: 'noise',
+    rect: 'noise',
+  }
+  const allOk = { canvas: 'ok', webgl: 'ok', audio: 'ok', rect: 'ok' }
+
+  /** Identify a fixed probe on FRESH deps (identical base confidence) with an
+   *  optional top-level `integrity`, returning the body. */
+  async function identifyIntegrity(
+    env: Env,
+    integrity?: Record<string, unknown>,
+  ): Promise<IdentifyResponse> {
+    const deps = makeDeps(env)
+    const { nonce } = await challenge(deps)
+    const body: Record<string, unknown> = {
+      nonce,
+      stable_components: probeComponents(),
+    }
+    if (integrity !== undefined) body.integrity = integrity
+    const resp = await handleRequest(postIdentify(body), deps)
+    expect(resp.status).toBe(200)
+    return (await resp.json()) as IdentifyResponse
+  }
+
+  it('surfaces noise without moving confidence by default', async () => {
+    const base = await identifyIntegrity({})
+    const noisy = await identifyIntegrity({}, allNoise)
+    expect(base.signals.client_integrity).toBe('unavailable')
+    expect(noisy.signals.client_integrity).toBe('noise')
+    expect(noisy.confidence).toBe(base.confidence)
+  })
+
+  it('downgrades confidence on noise only when the penalty is enabled', async () => {
+    const env: Env = { FP_INTEGRITY_PENALTY_ENABLED: '1' }
+    const base = await identifyIntegrity(env)
+    const noisy = await identifyIntegrity(env, allNoise)
+    expect(noisy.signals.client_integrity).toBe('noise')
+    expect(noisy.confidence).toBeLessThan(base.confidence)
+    const clean = await identifyIntegrity(env, allOk)
+    expect(clean.signals.client_integrity).toBe('ok')
+    expect(clean.confidence).toBe(base.confidence)
+  })
+
+  it('reads malformed material as unavailable (neutral), never as noise', async () => {
+    const env: Env = { FP_INTEGRITY_PENALTY_ENABLED: '1' }
+    const base = await identifyIntegrity(env)
+    const malformed = await identifyIntegrity(env, {
+      canvas: 1,
+      other: 'noise',
+    })
+    expect(malformed.signals.client_integrity).toBe('unavailable')
+    expect(malformed.confidence).toBe(base.confidence)
+  })
+})
+
+describe('persona coherence (UA OS family vs fonts, shared WASM label)', () => {
+  const WINDOWS_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+
+  /** An SDK-shaped payload: the UA rides under botd, not as a top-level key. */
+  function sdkLike(fonts: unknown): Record<string, unknown> {
+    return {
+      platform: 'Win32',
+      fonts,
+      botd: { signals: { userAgent: { value: WINDOWS_UA, state: 0 } } },
+    }
+  }
+
+  async function identifyComponents(
+    components: Record<string, unknown>,
+  ): Promise<IdentifyResponse> {
+    const deps = makeDeps()
+    const { nonce } = await challenge(deps)
+    const resp = await handleRequest(
+      postIdentify({ nonce, stable_components: components }),
+      deps,
+    )
+    expect(resp.status).toBe(200)
+    return (await resp.json()) as IdentifyResponse
+  }
+
+  it('flags a Windows UA with no Windows core fonts as a mismatch, surfaced-only', async () => {
+    const mismatch = await identifyComponents(sdkLike(['Arial', 'Courier New']))
+    const consistent = await identifyComponents(sdkLike(['Calibri']))
+    expect(mismatch.signals.persona_coherence).toBe('mismatch')
+    expect(consistent.signals.persona_coherence).toBe('consistent')
+    expect(mismatch.confidence).toBe(consistent.confidence)
+  })
+
+  it('reads unknown without a fonts array or a curated OS family', async () => {
+    const noFonts = await identifyComponents(sdkLike(undefined))
+    expect(noFonts.signals.persona_coherence).toBe('unknown')
+    const linux = await identifyComponents({
+      ...sdkLike([]),
+      botd: {
+        signals: {
+          userAgent: {
+            value: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/149',
+            state: 0,
+          },
+        },
+      },
+    })
+    expect(linux.signals.persona_coherence).toBe('unknown')
   })
 })

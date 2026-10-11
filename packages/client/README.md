@@ -9,7 +9,7 @@ by the server is authoritative.
 
 ```
 GET  /challenge    -> nonce + collection plan (+ probe transform when enforced)
-collect(challenge) -> { stable_components, probe?, ts }
+collect(challenge) -> { stable_components, probe?, ts, integrity }
 POST /identify     -> { visitorId, confidence, decision, signals, ... }
 ```
 
@@ -22,6 +22,11 @@ stay in their lanes:
   the challenge advertises `collect.challenge.verify` (i.e. the server has a
   probe key). See [WASM probe](#wasm-probe).
 - `ts` — the client clock (Unix ms) at collection (the server timestamp window).
+- `integrity` — four known-answer probe verdicts (`canvas` / `webgl` / `audio` /
+  `rect`, each `ok` | `noise` | `unavailable`) that catch fingerprint-noising
+  browsers (`src/integrity.ts`). Top-level by design — never inside
+  `stable_components`, so it cannot enter the `visitorId` match; the server
+  surfaces it as a risk signal. `unavailable` is neutral.
 
 ## Usage
 
@@ -38,7 +43,7 @@ const { identity, signatureValid } = await run({
 ```
 
 `createCollector()` uses the real FingerprintJS + BotD stack and the WASM probe.
-Every backend is injectable (`{ fingerprint, probe, now }`) for tests. A trivial
+Every backend is injectable (`{ fingerprint, probe, now, integrity }`) for tests. A trivial
 `stubCollector` is also exported for wiring smoke-tests; it gathers **no real
 fingerprint**.
 

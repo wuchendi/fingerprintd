@@ -12,10 +12,20 @@
  * burn, candidate recall, drift write-back) is the host's, so this stays pure.
  */
 
-import { FpEngine, initSync, passive_signals } from '../../../wasm/fp_wasm.js'
+import {
+  client_integrity,
+  FpEngine,
+  initSync,
+  passive_signals,
+  persona_coherence_label,
+} from '../../../wasm/fp_wasm.js'
 import type { EdgeConfig } from '../../config'
 import type { Candidate } from '../../lib/state'
-import type { PassiveVerdict, ScoreOutcome } from '../../lib/types'
+import type {
+  IntegrityVerdict,
+  PassiveVerdict,
+  ScoreOutcome,
+} from '../../lib/types'
 
 /** One-time wasm-bindgen module init (the module is a process-wide singleton). */
 let initialized = false
@@ -93,6 +103,34 @@ export class EdgeEngine {
     return JSON.parse(
       passive_signals(ja4, clientIp, claimedUa),
     ) as PassiveVerdict
+  }
+
+  /**
+   * Fused client-integrity verdict for one request, computed by the shared WASM
+   * free export (`fp_core::signals::ClientIntegrity`) so the edge reaches the
+   * SAME band and confidence delta as the native server. Secret-free.
+   *
+   * `undefined` (field absent) or malformed material reads `unavailable` with a
+   * `0` adjustment; the `noise` penalty applies only when the deployment opted
+   * in (`integrityPenaltyEnabled`).
+   */
+  clientIntegrity(
+    integrity: Record<string, unknown> | undefined,
+    penaltyEnabled: boolean,
+  ): IntegrityVerdict {
+    const raw = integrity === undefined ? undefined : JSON.stringify(integrity)
+    return JSON.parse(client_integrity(raw, penaltyEnabled)) as IntegrityVerdict
+  }
+
+  /**
+   * UA-claimed OS family vs the collected `fonts` set, computed by the shared
+   * WASM free export (`fp_core::signals::persona_coherence`) so the edge reaches
+   * the SAME label as native. Surfaced-only. A missing UA, an OS family outside
+   * the curated set or a non-array `fonts` reads `unknown` (neutral).
+   */
+  personaCoherence(claimedUa: string | undefined, fonts: unknown): string {
+    const raw = fonts === undefined ? undefined : JSON.stringify(fonts)
+    return persona_coherence_label(claimedUa, raw)
   }
 
   /** Constant-time check that `probe` is the correct nonce probe. */

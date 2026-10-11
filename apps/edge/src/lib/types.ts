@@ -69,6 +69,10 @@ export interface IdentifyRequest {
   /** Raw stable components (no nonce mixed in). Arbitrary JSON — the engine
    *  scores these but never derives an id from the client's copy. */
   stable_components: Record<string, unknown>
+  /** Known-answer client integrity probe verdicts (`canvas` / `webgl` / `audio`
+   *  / `rect`, each `ok` | `noise` | `unavailable`), top-level by design so they
+   *  never enter the matching input. Optional; absent ⇒ neutral. */
+  integrity?: Record<string, unknown>
 }
 
 /** Passive network-signal risk summary (architecture §5). */
@@ -77,6 +81,19 @@ export interface Signals {
   ua_tls_consistent: boolean
   /** Coarse IP risk band, e.g. `low` / `high`. */
   ip_risk: string
+  /** Fused client-integrity verdict (`ok` / `noise` / `unavailable`) from the
+   *  request's top-level `integrity` probes via the shared WASM
+   *  `client_integrity` export — `noise` is the footprint of a
+   *  fingerprint-noising browser. Surfaced always; moves confidence only when
+   *  `FP_INTEGRITY_PENALTY_ENABLED`. Optional for the same assess pass-through
+   *  reason as the velocity bands. */
+  client_integrity?: string
+  /** UA-claimed OS family vs the collected `fonts` set (`consistent` /
+   *  `mismatch` / `unknown`) via the shared WASM `persona_coherence_label`
+   *  export — `mismatch` is a borrowed persona (Windows UA, no Windows core
+   *  fonts). Surfaced-only; never moves confidence. Optional for the assess
+   *  pass-through. */
+  persona_coherence?: string
   /** Cross-session new-device production-rate band for the client IP
    *  (`low` / `medium` / `high`). The `/identify` response always populates it;
    *  the edge is stateless and scores one request at a time with no cross-session
@@ -106,6 +123,16 @@ export interface PassiveVerdict {
   /** Coarse IP risk band, `low` / `medium` / `high`. */
   ip_risk: string
   /** Signed confidence delta: positive boost, negative downgrade, `0` degraded. */
+  confidence_adjustment: number
+}
+
+/**
+ * Reply of the shared WASM `client_integrity` export
+ * (`fp_core::signals::ClientIntegrity`): the fused verdict plus the confidence
+ * delta (`0` unless the penalty is enabled and the verdict is `noise`).
+ */
+export interface IntegrityVerdict {
+  client_integrity: string
   confidence_adjustment: number
 }
 

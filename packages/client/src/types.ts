@@ -51,12 +51,15 @@ export interface ChallengeResponse {
   collect: Collect
 }
 
+import type { Integrity } from './integrity'
+
 /**
  * `POST /identify` request body.
  *
  * Only `nonce` and `stable_components` are always meaningful. The server reads
  * `probe` and `ts` only when the matching enforcement is configured;
- * otherwise they are ignored.
+ * otherwise they are ignored. `integrity` is optional and surfaced as a risk
+ * signal; absent means neutral.
  */
 export interface IdentifyRequest {
   /** The nonce previously minted by `GET /challenge`. */
@@ -70,6 +73,9 @@ export interface IdentifyRequest {
   /** Raw stable components (no nonce mixed in). Arbitrary JSON — the server
    *  scores these but the client never derives an id from them. */
   stable_components: Record<string, unknown>
+  /** Known-answer integrity probe verdicts (canvas / webgl / audio / rect),
+   *  top-level by design — never part of the matching input. */
+  integrity?: Integrity
 }
 
 /** Passive network-signal risk summary (architecture §5). */
@@ -78,6 +84,12 @@ export interface Signals {
   ua_tls_consistent: boolean
   /** Coarse IP risk band, e.g. `low` / `high`. */
   ip_risk: string
+  /** Fused verdict of the client's known-answer integrity probes
+   *  (`ok` / `noise` / `unavailable`), echoed by the server as a risk band. */
+  client_integrity?: string
+  /** UA-claimed OS family vs the collected font set
+   *  (`consistent` / `mismatch` / `unknown`), surfaced-only. */
+  persona_coherence?: string
 }
 
 /** `POST /identify` success body (architecture §5). */

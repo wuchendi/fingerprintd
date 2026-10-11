@@ -32,7 +32,7 @@ use serde_json::Value;
 use crate::{
     config::SecretKey,
     nonce::NonceOutcome,
-    signals::{PassiveSignals, StaticIpIntel},
+    signals::{ClientIntegrity, PassiveSignals, StaticIpIntel},
     signing::{ResponseSigner, SIGNATURE_HEADER, SIGNATURE_TIMESTAMP_HEADER},
     state::AppState,
 };
@@ -160,9 +160,23 @@ async fn identify(
 
             let signals = signals::extract(trusted_headers, claimed_ua, &intel);
 
-            // Fuse the passive adjustment into confidence, clamped to [0, 1]
-            // (fuzzy-matching §6). The visitorId and decision are unchanged.
-            let confidence = (outcome.confidence + signals.confidence_adjustment()).clamp(0.0, 1.0);
+            // Client-side known-answer integrity probes (red-team round 3): a
+            // fingerprint-noising browser fails them from inside the collector,
+            // the first single-request signal that sees such a browser. Always
+            // surfaced; folded into confidence only behind the opt-in penalty
+            // (legitimate privacy tooling trips the same probes).
+            let integrity = ClientIntegrity::from_json(req.integrity.as_ref());
+            // UA-claimed OS family vs the collected font set (surfaced-only): a
+            // borrowed Windows persona on a Linux host has no Windows core fonts.
+            let persona =
+                signals::persona_coherence(claimed_ua, req.stable_components.get("fonts"));
+
+            // Fuse the passive + integrity adjustments into confidence, clamped to
+            // [0, 1] (fuzzy-matching §6). The visitorId and decision are unchanged.
+            let confidence = (outcome.confidence
+                + signals.confidence_adjustment()
+                + integrity.confidence_adjustment(state.integrity_penalty_enabled))
+            .clamp(0.0, 1.0);
 
             tracing::debug!(
                 visitor_id = %outcome.visitor_id,
@@ -175,6 +189,8 @@ async fn identify(
                 confidence,
                 tls_consistency = signals.tls_consistency.as_str(),
                 ip_risk = signals.ip_risk.as_str(),
+                client_integrity = integrity.as_str(),
+                persona_coherence = persona.as_str(),
                 new_device_velocity = outcome.new_device_velocity.as_str(),
                 new_device_velocity_ja4 = outcome.new_device_velocity_ja4.as_str(),
                 "identified device",
@@ -186,6 +202,8 @@ async fn identify(
                 decision: outcome.decision.as_str(),
                 collision_risk: outcome.collision_risk,
                 signals: Signals {
+                    client_integrity: integrity.as_str(),
+                    persona_coherence: persona.as_str(),
                     new_device_velocity: outcome.new_device_velocity.as_str(),
                     new_device_velocity_ja4: outcome.new_device_velocity_ja4.as_str(),
                     ..Signals::from(signals)
@@ -267,6 +285,14 @@ fn claimed_ua(components: &Value) -> Option<&str> {
     ["userAgent", "user_agent", "ua"]
         .iter()
         .find_map(|k| components.get(k).and_then(Value::as_str))
+        // The real SDK emits no top-level UA (FingerprintJS has no such
+        // component); its UA rides under the BotD signals. Without this fallback
+        // the UA↔TLS cross-check never fires for SDK traffic (red-team round 3).
+        .or_else(|| {
+            components
+                .pointer("/botd/signals/userAgent/value")
+                .and_then(Value::as_str)
+        })
 }
 
 /// Current Unix time in milliseconds, saturating to `0` before the epoch — the
@@ -413,6 +439,14 @@ struct IdentifyRequest {
     ts: Option<i64>,
     /// Raw stable components (no nonce mixed in).
     stable_components: Value,
+    /// Known-answer client integrity probe verdicts (`canvas` / `webgl` / `audio`
+    /// / `rect`, each `ok` | `noise` | `unavailable`), sent **top-level** by the
+    /// SDK so they can never enter the matching input. Free-form JSON: an absent
+    /// field or malformed verdicts read as unavailable (neutral). Always surfaced
+    /// as `signals.client_integrity`; fused into `confidence` only when
+    /// `integrity_penalty_enabled`.
+    #[serde(default)]
+    integrity: Option<Value>,
 }
 
 /// `POST /identify` success body (architecture §5).
@@ -448,6 +482,18 @@ struct Signals {
     ua_tls_consistent: bool,
     /// Coarse IP risk band.
     ip_risk: &'static str,
+    /// Fused verdict of the client's known-answer integrity probes
+    /// (`ok` / `noise` / `unavailable`): `noise` means the browser returned a
+    /// wrong answer to a question an unmodified Chromium answers exactly — the
+    /// footprint of a fingerprint-noising (anti-detect) browser. Surfaced
+    /// always; lowers `confidence` only when `integrity_penalty_enabled`. A risk
+    /// band for downstream consumers, never folded into the `visitorId`.
+    client_integrity: &'static str,
+    /// UA-claimed OS family vs the collected `fonts` set
+    /// (`consistent` / `mismatch` / `unknown`): `mismatch` means a Windows or
+    /// macOS UA whose font set has none of that OS's core fonts — a borrowed
+    /// persona. Surfaced-only; never moves `confidence` or the `visitorId`.
+    persona_coherence: &'static str,
     /// Cross-session new-device production-rate band for the client IP
     /// (`low` / `medium` / `high`): an IP-keyed velocity signal that catches the
     /// fresh-seed-per-launch farm no single request can. Surfaced alongside
@@ -467,7 +513,10 @@ impl From<PassiveSignals> for Signals {
         Self {
             ua_tls_consistent: signals.tls_consistency.ua_tls_consistent(),
             ip_risk: signals.ip_risk.as_str(),
-            // Neutral defaults; the handler overrides these with the engine's bands.
+            // Neutral defaults; the handler overrides these with the request's
+            // integrity verdict and the engine's bands.
+            client_integrity: "unavailable",
+            persona_coherence: "unknown",
             new_device_velocity: "low",
             new_device_velocity_ja4: "low",
         }
@@ -616,6 +665,7 @@ mod tests {
             matcher: Arc::new(crate::fuzzy::FuzzyStore::new()),
             nonce_ttl_secs: 30,
             trust_edge_headers: false,
+            integrity_penalty_enabled: false,
             probe: None,
             signer: None,
             enforce_ts_window: false,
@@ -728,6 +778,115 @@ mod tests {
     /// Read the `confidence` field as an `f64`.
     fn confidence(body: &Value) -> f64 {
         body["confidence"].as_f64().unwrap()
+    }
+
+    // --- Client integrity probes (red-team round 3) ---
+
+    /// Identify a fixed probe on a **fresh** router with the given penalty
+    /// setting and optional top-level `integrity`, returning the body. Fresh
+    /// store per call ⇒ identical base confidence, so only the fusion differs.
+    async fn identify_integrity(penalty_enabled: bool, integrity: Option<Value>) -> Value {
+        let router = build_router(AppState::from_config(&Config {
+            integrity_penalty_enabled: penalty_enabled,
+            ..Config::default()
+        }));
+        let nonce = fresh_nonce(&router).await;
+        let mut body = json!({
+            "nonce": nonce,
+            "ts": 1,
+            "stable_components": { "userAgent": CHROME_UA },
+        });
+        if let Some(integrity) = integrity {
+            body["integrity"] = integrity;
+        }
+        json_body(post_identify(&router, body).await).await
+    }
+
+    fn all_noise() -> Value {
+        json!({ "canvas": "noise", "webgl": "noise", "audio": "noise", "rect": "noise" })
+    }
+
+    fn all_ok() -> Value {
+        json!({ "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" })
+    }
+
+    // --- Persona coherence + the BotD UA fallback (red-team round 3) ---
+
+    /// A Windows Chrome UA as the real SDK reports it: under the `BotD` signals,
+    /// not as a top-level component.
+    fn sdk_like_components(fonts: &Value) -> Value {
+        json!({
+            "platform": "Win32",
+            "fonts": fonts,
+            "botd": { "signals": { "userAgent": { "value": CHROME_UA, "state": 0 } } },
+        })
+    }
+
+    #[tokio::test]
+    async fn persona_mismatch_is_surfaced_without_moving_confidence() {
+        let router = test_router();
+        let mismatch = identify_with(&router, sdk_like_components(&json!(["Arial"]))).await;
+        assert_eq!(mismatch["signals"]["persona_coherence"], json!("mismatch"));
+        let consistent =
+            identify_with(&test_router(), sdk_like_components(&json!(["Calibri"]))).await;
+        assert_eq!(
+            consistent["signals"]["persona_coherence"],
+            json!("consistent")
+        );
+        assert!((confidence(&mismatch) - confidence(&consistent)).abs() < 1e-12);
+        // No fonts array / no UA → unknown.
+        let unknown = identify_with(&test_router(), json!({ "platform": "Win32" })).await;
+        assert_eq!(unknown["signals"]["persona_coherence"], json!("unknown"));
+    }
+
+    #[tokio::test]
+    async fn claimed_ua_falls_back_to_the_botd_signal_so_ua_tls_mismatch_fires_for_sdk_traffic() {
+        // Before the fallback an SDK payload (UA only under botd) could never be
+        // caught by the UA↔TLS cross-check: no claimed UA ⇒ always consistent.
+        let router = router_with_trust(true);
+        let nonce = fresh_nonce(&router).await;
+        let body = json!({
+            "nonce": nonce,
+            "ts": 1,
+            "stable_components": sdk_like_components(&json!(["Calibri"])),
+        });
+        let forged =
+            json_body(post_identify_headers(&router, body, &[(JA4_HEADER, AUTOMATION_JA4)]).await)
+                .await;
+        assert_eq!(forged["signals"]["ua_tls_consistent"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn integrity_absent_is_unavailable_and_neutral() {
+        let body = identify_integrity(true, None).await;
+        assert_eq!(body["signals"]["client_integrity"], json!("unavailable"));
+        // Malformed material is neutral too — never manufactured into noise.
+        let malformed = identify_integrity(true, Some(json!({ "canvas": 1 }))).await;
+        assert_eq!(
+            malformed["signals"]["client_integrity"],
+            json!("unavailable")
+        );
+        assert!((confidence(&malformed) - confidence(&body)).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn integrity_noise_is_surfaced_but_not_penalised_by_default() {
+        let base = identify_integrity(false, None).await;
+        let noisy = identify_integrity(false, Some(all_noise())).await;
+        assert_eq!(noisy["signals"]["client_integrity"], json!("noise"));
+        assert!((confidence(&noisy) - confidence(&base)).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn integrity_noise_downgrades_confidence_only_when_enabled() {
+        let base = identify_integrity(true, None).await;
+        let noisy = identify_integrity(true, Some(all_noise())).await;
+        assert_eq!(noisy["signals"]["client_integrity"], json!("noise"));
+        assert!(confidence(&noisy) < confidence(&base));
+        // An exact answer set is surfaced as ok and never moves confidence.
+        let clean = identify_integrity(true, Some(all_ok())).await;
+        assert_eq!(clean["signals"]["client_integrity"], json!("ok"));
+        assert!((confidence(&clean) - confidence(&base)).abs() < 1e-12);
     }
 
     #[tokio::test]

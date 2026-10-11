@@ -130,6 +130,7 @@ secrets are read at runtime — never embedded.
 | `FP_TS_SKEW_SECS` (var) | allowed clock skew when the window is on | 30 |
 | `FP_NONCE_TTL_SECS` (var) | nonce lifetime, advertised as `expires_in` | 30 |
 | `FP_TRUST_EDGE_HEADERS` (var) | trust edge-injected passive-signal headers | off |
+| `FP_INTEGRITY_PENALTY_ENABLED` (var) | let a `noise` client-integrity verdict lower confidence (the band is always surfaced) | off |
 | `FP_CORS_ORIGINS` (var) | comma-separated browser CORS origins (`*` = any); unset ⇒ CORS off | off |
 | `NONCE` (Durable Object) | one-time nonce store; unbound ⇒ in-isolate stub | — |
 | `DB` (D1) | single database — fingerprint library + blocking index + check-in event log; unbound ⇒ empty stub | — |

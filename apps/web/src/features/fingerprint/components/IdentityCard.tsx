@@ -122,6 +122,32 @@ export function IdentityCard({
               <span className="font-mono">{identity.signals.ip_risk}</span>
             }
           />
+          <Signal
+            label={t('Client integrity')}
+            value={
+              <span className="font-mono">
+                {identity.signals.client_integrity ?? 'unavailable'}
+              </span>
+            }
+            tone={
+              identity.signals.client_integrity === 'noise'
+                ? 'default'
+                : 'muted'
+            }
+          />
+          <Signal
+            label={t('Persona coherence')}
+            value={
+              <span className="font-mono">
+                {identity.signals.persona_coherence ?? 'unknown'}
+              </span>
+            }
+            tone={
+              identity.signals.persona_coherence === 'mismatch'
+                ? 'default'
+                : 'muted'
+            }
+          />
         </div>
       </CardContent>
     </Card>

@@ -91,6 +91,16 @@ export function EvidenceLanes({
               ` (${new Date(collected.ts).toISOString()})`}
           </p>
         </Lane>
+
+        <Lane
+          title="integrity"
+          description={t(
+            'known-answer probe verdicts (canvas / webgl / audio / rect) — a risk signal, never matching input',
+          )}
+          present={collected.integrity !== undefined}
+        >
+          <JsonBlock value={collected.integrity} />
+        </Lane>
       </CardContent>
     </Card>
   )

@@ -40,6 +40,7 @@
 
 use fp_core::fuzzy::FuzzyStore;
 use fp_core::probe::ProbeVerifier;
+use fp_core::signals::{ClientIntegrity, persona_coherence};
 use fp_core::signals::{StaticIpIntel, compute};
 use fp_core::signing::ResponseSigner;
 use hmac::{Hmac, KeyInit, Mac};
@@ -125,6 +126,51 @@ fn passive_signals_impl(
         "confidence_adjustment": signals.confidence_adjustment(),
     });
     reply.to_string()
+}
+
+/// Fuse the client's known-answer integrity probe verdicts (the request's
+/// top-level `integrity` object, JSON-encoded) into the shared verdict + the
+/// confidence adjustment (`fp_core::signals::ClientIntegrity`). The edge Worker
+/// calls this so its `client_integrity` band and fusion are byte-identical to
+/// the native server's. `None` / unparseable JSON ⇒ `unavailable`, adjustment
+/// `0` (neutral). The penalty applies only when the deployment enabled it.
+///
+/// Owned `Option<String>` is the wasm-bindgen boundary shape; see
+/// [`passive_signals`].
+#[wasm_bindgen]
+#[allow(clippy::needless_pass_by_value)]
+pub fn client_integrity(integrity_json: Option<String>, penalty_enabled: bool) -> String {
+    client_integrity_impl(integrity_json.as_deref(), penalty_enabled)
+}
+
+/// Native-testable core of [`client_integrity`], returning the JSON `String`.
+fn client_integrity_impl(integrity_json: Option<&str>, penalty_enabled: bool) -> String {
+    let parsed: Option<Value> = integrity_json.and_then(|raw| serde_json::from_str(raw).ok());
+    let verdict = ClientIntegrity::from_json(parsed.as_ref());
+    let reply = json!({
+        "client_integrity": verdict.as_str(),
+        "confidence_adjustment": verdict.confidence_adjustment(penalty_enabled),
+    });
+    reply.to_string()
+}
+
+/// Cross-check the UA-claimed OS family against the collected `fonts` set
+/// (JSON array, as the SDK sends it) — `fp_core::signals::persona_coherence`.
+/// Returns the wire label `consistent` | `mismatch` | `unknown`; `None` or
+/// unparseable `fonts_json` reads `unknown` (neutral). Surfaced-only. Owned
+/// `Option<String>` is the wasm-bindgen boundary shape (see [`passive_signals`]).
+#[wasm_bindgen]
+#[allow(clippy::needless_pass_by_value)]
+pub fn persona_coherence_label(claimed_ua: Option<String>, fonts_json: Option<String>) -> String {
+    persona_coherence_impl(claimed_ua.as_deref(), fonts_json.as_deref())
+}
+
+/// Native-testable core of [`persona_coherence_label`].
+fn persona_coherence_impl(claimed_ua: Option<&str>, fonts_json: Option<&str>) -> String {
+    let fonts: Option<Value> = fonts_json.and_then(|raw| serde_json::from_str(raw).ok());
+    persona_coherence(claimed_ua, fonts.as_ref())
+        .as_str()
+        .to_owned()
 }
 
 /// Server-side edge compute, configured with a deployment's secrets.
@@ -284,7 +330,10 @@ struct Candidate {
 
 #[cfg(test)]
 mod tests {
-    use super::{FpEngine, PROBE_KEY, passive_signals_impl, probe, probe_with_key};
+    use super::{
+        FpEngine, PROBE_KEY, client_integrity_impl, passive_signals_impl, persona_coherence_impl,
+        probe, probe_with_key,
+    };
     use serde_json::{Value, json};
 
     /// A JA4 whose structural counts read as a real browser (15 ciphers, 16 ext)
@@ -512,5 +561,53 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(absent["ip_risk"], "low");
+    }
+
+    #[test]
+    fn client_integrity_noise_is_surfaced_and_penalised_only_when_enabled() {
+        let noisy = r#"{"canvas":"noise","webgl":"noise","audio":"noise","rect":"noise"}"#;
+        let surfaced: Value =
+            serde_json::from_str(&client_integrity_impl(Some(noisy), false)).unwrap();
+        assert_eq!(surfaced["client_integrity"], "noise");
+        assert_eq!(surfaced["confidence_adjustment"], 0.0);
+        let penalised: Value =
+            serde_json::from_str(&client_integrity_impl(Some(noisy), true)).unwrap();
+        assert_eq!(penalised["client_integrity"], "noise");
+        assert_eq!(
+            penalised["confidence_adjustment"],
+            -fp_core::signals::INTEGRITY_NOISE_PENALTY
+        );
+    }
+
+    #[test]
+    fn client_integrity_ok_absent_and_malformed() {
+        let clean = r#"{"canvas":"ok","webgl":"ok","audio":"ok","rect":"ok"}"#;
+        let ok: Value = serde_json::from_str(&client_integrity_impl(Some(clean), true)).unwrap();
+        assert_eq!(ok["client_integrity"], "ok");
+        assert_eq!(ok["confidence_adjustment"], 0.0);
+        for raw in [None, Some("not json"), Some("[]"), Some("{}")] {
+            let reply: Value = serde_json::from_str(&client_integrity_impl(raw, true)).unwrap();
+            assert_eq!(reply["client_integrity"], "unavailable", "{raw:?}");
+            assert_eq!(reply["confidence_adjustment"], 0.0, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn persona_coherence_label_mirrors_fp_core() {
+        let windows_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0";
+        assert_eq!(
+            persona_coherence_impl(Some(windows_ua), Some(r#"["Arial","Courier New"]"#)),
+            "mismatch"
+        );
+        assert_eq!(
+            persona_coherence_impl(Some(windows_ua), Some(r#"["Calibri"]"#)),
+            "consistent"
+        );
+        assert_eq!(persona_coherence_impl(Some(windows_ua), None), "unknown");
+        assert_eq!(
+            persona_coherence_impl(Some(windows_ua), Some("not json")),
+            "unknown"
+        );
+        assert_eq!(persona_coherence_impl(None, Some("[]")), "unknown");
     }
 }

@@ -125,6 +125,7 @@ The native server is configured lowest → highest priority: built-in defaults �
 | `bind_addr`                  | `FINGERPRINTD_BIND_ADDR`                  | `127.0.0.1:8080` | Listen address.                                                             |
 | `nonce_ttl_secs`             | `FINGERPRINTD_NONCE_TTL_SECS`             | `30`             | One-time nonce lifetime, advertised as `expires_in`.                        |
 | `trust_edge_headers`         | `FINGERPRINTD_TRUST_EDGE_HEADERS`         | `false`          | Trust edge-injected passive-signal headers (JA4/IP). **Fail-closed:** enable only behind a trusted edge; a directly-reachable origin must leave it off. |
+| `integrity_penalty_enabled`  | `FINGERPRINTD_INTEGRITY_PENALTY_ENABLED`  | `false`          | Let a `noise` client-integrity verdict lower `/identify` confidence. The verdict is always surfaced as `signals.client_integrity`; off until a real-traffic false-positive rate is known (privacy tooling trips the same probes). |
 | `probe_key`                  | `FINGERPRINTD_PROBE_KEY`                  | *(unset)*        | HMAC key enabling nonce-probe verification (defense in depth). Off if unset. |
 | `response_signing_key`       | `FINGERPRINTD_RESPONSE_SIGNING_KEY`       | *(unset)*        | HMAC key enabling `/identify` response signatures. Off if unset.            |
 | `enforce_ts_window`          | `FINGERPRINTD_ENFORCE_TS_WINDOW`          | `false`          | Enforce the request timestamp window.                                       |
@@ -191,6 +192,7 @@ Per-component tooling:
 - **SDK** — `cd packages/client && bun run lint && bun run typecheck && bun run test`
 - **Edge Worker** — `cd apps/edge && bun run test` (identify + check-in: router / state / parity / assess in miniflare)
 - **Playground** — `cd apps/web && bun run typecheck && bun run build`
+- **Red-team harness** (manual, needs Docker) — `bash scripts/redteam/cloak/run.sh` runs the real SDK collector inside a fingerprint-noising browser (CloakBrowser) and stock Chromium; curated captures live in `crates/fp-core/tests/fixtures/cloakbrowser/` and drive `crates/fp-core/tests/cloakbrowser_fixtures.rs`. See [`scripts/redteam/cloak/README.md`](scripts/redteam/cloak/README.md).
 
 ## Design
 

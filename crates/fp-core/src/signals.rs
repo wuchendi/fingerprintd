@@ -35,6 +35,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
+use serde_json::Value;
+
 /// Minimum cipher count in a JA4 fingerprint for the stack to read as a real
 /// browser. Browsers advertise a broad cipher list; minimal automation stacks
 /// (curl/python/go defaults) advertise few. Coarse structural heuristic, not a
@@ -431,12 +433,339 @@ fn ipv4_in_block(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
     (u32::from(ip) & mask) == (u32::from(net) & mask)
 }
 
+/// The four known-answer client integrity probes the SDK reports under the
+/// request's top-level `integrity` field (`packages/client/src/integrity.ts`),
+/// each with a verdict of `ok` | `noise` | `unavailable`.
+pub const INTEGRITY_PROBES: [&str; 4] = ["canvas", "webgl", "audio", "rect"];
+
+/// Confidence downgrade applied when the client's integrity probes report
+/// [`ClientIntegrity::Noise`] **and** the deployment has opted into the penalty.
+///
+/// TUNING PLACEHOLDER (a policy guess, not a measured claim): of the same order
+/// as [`MISMATCH_PENALTY`] but softer, because legitimate privacy tooling (Brave
+/// farbling, canvas blockers, `resistFingerprinting`) injects the same kind of
+/// noise for real users. Deployments keep the penalty off until a real-traffic
+/// false-positive rate exists; the verdict is always surfaced regardless.
+pub const INTEGRITY_NOISE_PENALTY: f64 = 0.3;
+
+/// Fused verdict of the client's known-answer integrity probes (red-team round 3).
+///
+/// The SDK asks the browser four questions whose answers are fixed by
+/// construction in an unmodified Chromium (lossless canvas round-trip, exact
+/// WebGL clear, exact constant audio source, exact 1/64-px layout) and reports
+/// `ok` / `noise` / `unavailable` per probe. A fingerprint-noising browser
+/// answers wrongly on all four; stock browsers answer exactly. This is the first
+/// **single-request** signal that observes such a browser — from inside the
+/// collector, without any connection-layer input.
+///
+/// Trust boundary: the verdicts are client-reported, so like every client value
+/// they are hookable; this is depth, not a lock. They ride top-level in the
+/// request — never inside `stable_components` — so they can never enter the
+/// `visitorId` match. Fusion into confidence is opt-in
+/// ([`confidence_adjustment`](ClientIntegrity::confidence_adjustment)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientIntegrity {
+    /// Every reporting probe returned the known answer.
+    Ok,
+    /// At least one probe returned a wrong answer — fingerprint noise observed.
+    Noise,
+    /// No probe reported a usable verdict (field absent, APIs missing, malformed).
+    /// Neutral: an absent capability must never manufacture a penalty.
+    Unavailable,
+}
+
+impl ClientIntegrity {
+    /// Stable wire label for the response body (`"ok"|"noise"|"unavailable"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClientIntegrity::Ok => "ok",
+            ClientIntegrity::Noise => "noise",
+            ClientIntegrity::Unavailable => "unavailable",
+        }
+    }
+
+    /// Fold per-probe verdict strings into one verdict: any `noise` wins, else
+    /// any `ok` reads [`ClientIntegrity::Ok`], else nothing usable was reported.
+    /// Unknown strings count as unavailable, never as noise.
+    pub fn from_verdicts<'a>(verdicts: impl IntoIterator<Item = Option<&'a str>>) -> Self {
+        let mut saw_ok = false;
+        for verdict in verdicts {
+            match verdict {
+                Some("noise") => return ClientIntegrity::Noise,
+                Some("ok") => saw_ok = true,
+                _ => {}
+            }
+        }
+        if saw_ok {
+            ClientIntegrity::Ok
+        } else {
+            ClientIntegrity::Unavailable
+        }
+    }
+
+    /// Read the verdict from the request's top-level `integrity` JSON value,
+    /// shaped `{ canvas, webgl, audio, rect }`. An absent field or a non-object
+    /// value is [`ClientIntegrity::Unavailable`].
+    pub fn from_json(integrity: Option<&Value>) -> Self {
+        let Some(object) = integrity.and_then(Value::as_object) else {
+            return ClientIntegrity::Unavailable;
+        };
+        Self::from_verdicts(
+            INTEGRITY_PROBES
+                .iter()
+                .map(|probe| object.get(*probe).and_then(Value::as_str)),
+        )
+    }
+
+    /// Confidence adjustment fused into `/identify` confidence alongside
+    /// [`PassiveSignals::confidence_adjustment`]: `-`[`INTEGRITY_NOISE_PENALTY`]
+    /// for [`ClientIntegrity::Noise`] when the deployment has enabled the
+    /// penalty, otherwise `0.0`. Off by default so the band stays surfaced-only
+    /// until its false-positive rate on real traffic is known.
+    pub fn confidence_adjustment(self, penalty_enabled: bool) -> f64 {
+        if penalty_enabled && self == ClientIntegrity::Noise {
+            -INTEGRITY_NOISE_PENALTY
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Fonts `FingerprintJS` 5.2 probes that every stock Windows 10/11 install ships
+/// (`packages/client` adapts the FJS `fonts` set unchanged). Curated and small on
+/// purpose: a Windows persona exposing **none** of these is incoherent.
+pub const WINDOWS_CORE_FONTS: [&str; 5] = [
+    "Calibri",
+    "Segoe UI Light",
+    "MS UI Gothic",
+    "Marlett",
+    "Microsoft Uighur",
+];
+
+/// Fonts `FingerprintJS` 5.2 probes that every stock macOS install ships.
+pub const MACOS_CORE_FONTS: [&str; 3] = ["Helvetica Neue", "Menlo", "Gill Sans"];
+
+/// Verdict of cross-checking the UA-claimed OS family against the collected
+/// `fonts` set (red-team round 3).
+///
+/// A fingerprint-cloaking browser that borrows a Windows persona on a Linux host
+/// reports a Windows UA while its font set lacks every font Windows always has
+/// (the free `CloakBrowser` binary in Docker hides the host's Linux fonts but adds
+/// none). Surfaced-only: it never moves confidence or the `visitorId`.
+///
+/// Honest limits, stated plainly: the adversary's Pro preview binary already
+/// spoofs Windows font metrics, and its README tells operators to install the
+/// Windows font set — this closes the default/container configuration and
+/// raises cost, nothing more. Only Windows and macOS personas are checked;
+/// everything else (Linux, Android, iOS, unknown) reads `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonaCoherence {
+    /// The UA's OS family and the font set agree (≥ 1 core font present).
+    Consistent,
+    /// The UA claims Windows / macOS but the font set has none of that OS's
+    /// core fonts (an empty set counts — a real Windows browser always finds
+    /// Calibri).
+    Mismatch,
+    /// No basis to check: no UA, an OS family outside the curated set, or no
+    /// `fonts` array. Neutral.
+    Unknown,
+}
+
+impl PersonaCoherence {
+    /// Stable wire label for the response body (`"consistent"|"mismatch"|"unknown"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PersonaCoherence::Consistent => "consistent",
+            PersonaCoherence::Mismatch => "mismatch",
+            PersonaCoherence::Unknown => "unknown",
+        }
+    }
+}
+
+/// The core-font list for the OS family a UA claims, or `None` when the family
+/// is outside the curated set. `Macintosh` (not the `like Mac OS X` of iOS UAs)
+/// marks macOS; `Windows NT` marks desktop Windows.
+fn core_fonts_for_ua(claimed_ua: &str) -> Option<&'static [&'static str]> {
+    if claimed_ua.contains("Windows NT") {
+        Some(&WINDOWS_CORE_FONTS)
+    } else if claimed_ua.contains("Macintosh") {
+        Some(&MACOS_CORE_FONTS)
+    } else {
+        None
+    }
+}
+
+/// Cross-check the UA-claimed OS family against the collected `fonts` set (a
+/// JSON array of font names as the SDK sends it). See [`PersonaCoherence`].
+pub fn persona_coherence(claimed_ua: Option<&str>, fonts: Option<&Value>) -> PersonaCoherence {
+    let Some(core) = claimed_ua.and_then(core_fonts_for_ua) else {
+        return PersonaCoherence::Unknown;
+    };
+    let Some(fonts) = fonts.and_then(Value::as_array) else {
+        return PersonaCoherence::Unknown;
+    };
+    if fonts
+        .iter()
+        .filter_map(Value::as_str)
+        .any(|font| core.contains(&font))
+    {
+        PersonaCoherence::Consistent
+    } else {
+        PersonaCoherence::Mismatch
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{ClientIntegrity, INTEGRITY_NOISE_PENALTY, PersonaCoherence, persona_coherence};
+
+    // --- Persona coherence (UA OS family vs fonts, red-team round 3) ---
+
+    const WINDOWS_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36";
+    const MAC_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36";
+    const IOS_UA: &str =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1";
+
+    #[test]
+    fn persona_windows_ua_without_any_windows_core_font_is_a_mismatch() {
+        let linux_fonts = json!([
+            "Arial",
+            "Courier New",
+            "Times New Roman",
+            "Noto Color Emoji"
+        ]);
+        assert_eq!(
+            persona_coherence(Some(WINDOWS_UA), Some(&linux_fonts)),
+            PersonaCoherence::Mismatch
+        );
+        // An empty set is a mismatch too: a real Windows browser always finds Calibri.
+        assert_eq!(
+            persona_coherence(Some(WINDOWS_UA), Some(&json!([]))),
+            PersonaCoherence::Mismatch
+        );
+        let windows_fonts = json!(["Arial", "Calibri", "Segoe UI Light"]);
+        assert_eq!(
+            persona_coherence(Some(WINDOWS_UA), Some(&windows_fonts)),
+            PersonaCoherence::Consistent
+        );
+    }
+
+    #[test]
+    fn persona_macos_checks_its_own_core_fonts_and_ios_is_not_macos() {
+        let mac_fonts = json!(["Helvetica Neue", "Menlo"]);
+        assert_eq!(
+            persona_coherence(Some(MAC_UA), Some(&mac_fonts)),
+            PersonaCoherence::Consistent
+        );
+        assert_eq!(
+            persona_coherence(Some(MAC_UA), Some(&json!(["Calibri"]))),
+            PersonaCoherence::Mismatch
+        );
+        // `like Mac OS X` (iOS) is outside the curated set → unknown, never mismatch.
+        assert_eq!(
+            persona_coherence(Some(IOS_UA), Some(&json!([]))),
+            PersonaCoherence::Unknown
+        );
+    }
+
+    #[test]
+    fn persona_unknown_without_ua_family_or_fonts_array() {
+        assert_eq!(
+            persona_coherence(None, Some(&json!([]))),
+            PersonaCoherence::Unknown
+        );
+        assert_eq!(
+            persona_coherence(
+                Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/149"),
+                Some(&json!([]))
+            ),
+            PersonaCoherence::Unknown
+        );
+        assert_eq!(
+            persona_coherence(Some(WINDOWS_UA), None),
+            PersonaCoherence::Unknown
+        );
+        assert_eq!(
+            persona_coherence(Some(WINDOWS_UA), Some(&json!("Calibri"))),
+            PersonaCoherence::Unknown
+        );
+    }
     use super::{
         ClientStack, IpIntel, IpRisk, PassiveSignals, StaticIpIntel, TlsConsistency, classify_ja4,
         compute, ja4_class,
     };
+    use serde_json::json;
+
+    // --- Client integrity probes (red-team round 3) ---
+
+    #[test]
+    fn integrity_any_noise_wins_then_ok_then_unavailable() {
+        assert_eq!(
+            ClientIntegrity::from_verdicts([Some("ok"), Some("ok"), Some("noise"), None]),
+            ClientIntegrity::Noise
+        );
+        assert_eq!(
+            ClientIntegrity::from_verdicts([Some("ok"), Some("unavailable"), None, Some("weird")]),
+            ClientIntegrity::Ok
+        );
+        assert_eq!(
+            ClientIntegrity::from_verdicts([Some("unavailable"), None, Some("weird")]),
+            ClientIntegrity::Unavailable
+        );
+        assert_eq!(
+            ClientIntegrity::from_verdicts([]),
+            ClientIntegrity::Unavailable
+        );
+    }
+
+    #[test]
+    fn integrity_from_json_reads_the_four_probes_and_degrades_on_malformed() {
+        let noisy = json!({ "canvas": "noise", "webgl": "ok", "audio": "ok", "rect": "ok" });
+        assert_eq!(
+            ClientIntegrity::from_json(Some(&noisy)),
+            ClientIntegrity::Noise
+        );
+        let clean = json!({ "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" });
+        assert_eq!(
+            ClientIntegrity::from_json(Some(&clean)),
+            ClientIntegrity::Ok
+        );
+        // Absent, non-object, empty, non-string and unknown-key shapes are neutral.
+        assert_eq!(
+            ClientIntegrity::from_json(None),
+            ClientIntegrity::Unavailable
+        );
+        assert_eq!(
+            ClientIntegrity::from_json(Some(&json!("noise"))),
+            ClientIntegrity::Unavailable
+        );
+        assert_eq!(
+            ClientIntegrity::from_json(Some(&json!({}))),
+            ClientIntegrity::Unavailable
+        );
+        assert_eq!(
+            ClientIntegrity::from_json(Some(&json!({ "canvas": 1, "other": "noise" }))),
+            ClientIntegrity::Unavailable
+        );
+    }
+
+    #[test]
+    fn integrity_penalty_is_opt_in_and_only_for_noise() {
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(approx(
+            ClientIntegrity::Noise.confidence_adjustment(false),
+            0.0
+        ));
+        assert!(approx(ClientIntegrity::Ok.confidence_adjustment(true), 0.0));
+        assert!(approx(
+            ClientIntegrity::Unavailable.confidence_adjustment(true),
+            0.0
+        ));
+        assert!(approx(
+            ClientIntegrity::Noise.confidence_adjustment(true),
+            -INTEGRITY_NOISE_PENALTY
+        ));
+    }
 
     /// A JA4 whose structural counts read as a real browser (15 ciphers, 16 ext).
     const BROWSER_JA4: &str = "t13d1516h2_8daaf6152771_02713d6af862";

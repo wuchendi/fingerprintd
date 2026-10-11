@@ -40,6 +40,7 @@ export interface Env {
   FP_NONCE_TTL_SECS?: string
   /** `"1"`/`"true"` trusts edge-injected passive-signal headers. Default OFF. */
   FP_TRUST_EDGE_HEADERS?: string
+  FP_INTEGRITY_PENALTY_ENABLED?: string
   /** Admin key gating `DELETE /visitor/{id}` GDPR erasure (Worker Secret).
    *  Empty/unset ⇒ the erasure endpoint is DISABLED (returns 404, fail-closed). */
   FP_ADMIN_KEY?: string
@@ -68,6 +69,9 @@ export interface EdgeConfig {
   nonceTtlSecs: number
   /** Whether edge-injected passive-signal headers are trusted. */
   trustEdgeHeaders: boolean
+  /** Whether a `noise` client-integrity verdict may lower confidence. Off by
+   *  default: the band is surfaced-only until its false-positive rate is known. */
+  integrityPenaltyEnabled: boolean
   /** Admin key for `DELETE /visitor/{id}` erasure; `undefined` ⇒ endpoint
    *  DISABLED (fail-closed 404). Compared constant-time against the bearer. */
   adminKey?: string
@@ -124,6 +128,7 @@ export function resolveConfig(env: Env): EdgeConfig {
     tsSkewMs: intVar(env.FP_TS_SKEW_SECS, 30) * 1000,
     nonceTtlSecs: intVar(env.FP_NONCE_TTL_SECS, 30),
     trustEdgeHeaders: flag(env.FP_TRUST_EDGE_HEADERS),
+    integrityPenaltyEnabled: flag(env.FP_INTEGRITY_PENALTY_ENABLED),
     adminKey: secret(env.FP_ADMIN_KEY),
     retentionMs: intVar(env.FP_RETENTION_SECS, 0) * 1000,
     checkinRetentionMs: intVar(env.CHECKIN_RETENTION_SECS, 0) * 1000,

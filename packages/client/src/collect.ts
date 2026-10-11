@@ -14,6 +14,7 @@
  * empty evidence; real collectors are validated by a human in a real browser.
  */
 
+import type { Integrity } from './integrity'
 import type { ChallengeResponse } from './types'
 
 /** The evidence a collector produces from a challenge. */
@@ -28,6 +29,10 @@ export interface Collected {
    *  and echoed on `/identify`; the server checks it only when its timestamp
    *  window is enforced. */
   ts?: number
+  /** Optional known-answer integrity verdicts (`integrity.ts`). A risk signal
+   *  the server surfaces — kept OUT of `stable_components` so it never enters
+   *  the `visitorId` match. */
+  integrity?: Integrity
 }
 
 /** Turns a challenge into collected evidence. Async because real collectors do
