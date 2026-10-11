@@ -30,7 +30,7 @@ wasm-bindgen = "0.2"
 # The framework-free core, without its `rng` feature: the edge host uses only
 # the deterministic, seed-derived compute, so `rand`/`getrandom` (unsupported on
 # `wasm32-unknown-unknown`) stays out of the wasm build graph.
-fingerprintd-core = { path = "../fp-core", version = "1.0.0", default-features = false }
+fingerprintd-core = { path = "../fp-core", version = "0.0.1", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hmac = { workspace = true }

@@ -213,7 +213,7 @@ Three artifacts are published, all from one version (the Cargo workspace version
 Releases run from [`.github/workflows/release.yml`](.github/workflows/release.yml): bump the version in both manifests, then push a matching tag:
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v0.0.1 && git push origin v0.0.1
 ```
 
 The workflow verifies the tag, rebuilds the WASM, tests and builds the SDK, publishes to npm, then publishes `fingerprintd-core` and `fingerprintd` to crates.io. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:

@@ -1,6 +1,6 @@
 {
   "name": "@cdlab/fingerprintd",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Browser SDK for the fingerprintd challenge/identify flow (collect-only; the server judges).",
   "type": "module",
   "license": "Apache-2.0",
