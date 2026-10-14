@@ -2,13 +2,24 @@
  * Unit tests for the FingerprintJS → server-schema adapter.
  *
  * Fixtures are FJS-SHAPED: real FJS key names with values wrapped as
- * `{ value, duration }`. The assertions pin the three transforms the server
+ * `{ value, duration }`, value shapes as captured from real browsers
+ * (`tests/fixtures/fjs-raw/`). The assertions pin the transforms the server
  * (`crates/fp-core/src/fuzzy/mod.rs` `classify()`) requires — wrapper unwrap,
- * key-name mapping, and drop of unstorable kinds — with NO browser involved.
+ * key-name mapping, and per-component canonicalization into storable kinds.
  */
 
 import { describe, expect, it } from 'vitest'
 import { adaptFingerprintComponents } from '../../src/adapter'
+
+/** A real-shape FJS `webGlBasics` value (Chromium, unmasked strings present). */
+const WEBGL_BASICS = {
+  version: 'WebGL 1.0 (OpenGL ES 2.0 Chromium)',
+  vendor: 'WebKit',
+  vendorUnmasked: 'Google Inc. (Intel)',
+  renderer: 'WebKit WebGL',
+  rendererUnmasked: 'ANGLE (Intel)',
+  shadingLanguageVersion: 'WebGL GLSL ES 1.0',
+}
 
 describe('adaptFingerprintComponents', () => {
   it('unwraps the { value, duration } wrapper to a bare scalar', () => {
@@ -34,13 +45,13 @@ describe('adaptFingerprintComponents', () => {
     const out = adaptFingerprintComponents({
       hardwareConcurrency: { value: 8, duration: 0 },
       deviceMemory: { value: 8, duration: 0 },
-      screenResolution: { value: 1080, duration: 0 },
-      webGlBasics: { value: 'ANGLE (Intel)', duration: 5 },
+      screenResolution: { value: [1080, 1920], duration: 0 },
+      webGlBasics: { value: WEBGL_BASICS, duration: 5 },
     })
     expect(out.cpu_cores).toBe(8)
     expect(out.device_memory).toBe(8)
-    expect(out.screen).toBe(1080)
-    expect(out.webgl).toBe('ANGLE (Intel)')
+    expect(out.screen).toBe('1080x1920')
+    expect(out.webgl).toBe('Google Inc. (Intel)|ANGLE (Intel)')
     // Original FJS names must not survive the rename.
     expect(out).not.toHaveProperty('hardwareConcurrency')
     expect(out).not.toHaveProperty('deviceMemory')
@@ -63,15 +74,85 @@ describe('adaptFingerprintComponents', () => {
     expect(out).not.toHaveProperty('plugins')
   })
 
-  it('drops a category/numeric mapped field whose value is an object', () => {
-    // Real FJS webgl/canvas values are objects — the server cannot store them,
-    // so they drop (wrapper+key mismatch, not canonicalization).
+  it('reduces plugins to their names (the server Set keeps strings only)', () => {
     const out = adaptFingerprintComponents({
-      webGlBasics: { value: { version: 'WebGL 2.0' }, duration: 5 },
-      canvas: { value: { winding: true }, duration: 9 },
+      plugins: {
+        value: [
+          { name: 'PDF Viewer', description: 'PDF', mimeTypes: [] },
+          { name: 'Chrome PDF Viewer', description: 'PDF', mimeTypes: [] },
+        ],
+        duration: 1,
+      },
+    })
+    expect(out.plugins).toEqual(['PDF Viewer', 'Chrome PDF Viewer'])
+  })
+
+  it('canonicalizes webGlBasics to vendor|renderer, falling back to masked names', () => {
+    const masked = adaptFingerprintComponents({
+      webGlBasics: {
+        value: { ...WEBGL_BASICS, vendorUnmasked: '', rendererUnmasked: '' },
+        duration: 5,
+      },
+    })
+    expect(masked.webgl).toBe('WebKit|WebKit WebGL')
+  })
+
+  it('drops the webgl status codes (no GL context) instead of storing them', () => {
+    const out = adaptFingerprintComponents({
+      webGlBasics: { value: -1, duration: 1 },
+      webGlExtensions: { value: -2, duration: 1 },
     })
     expect(out).not.toHaveProperty('webgl')
-    expect(out).not.toHaveProperty('canvas')
+    expect(out).not.toHaveProperty('webgl_extensions')
+  })
+
+  it('hashes webGlExtensions into its own webgl_extensions field', () => {
+    const out = adaptFingerprintComponents({
+      webGlBasics: { value: WEBGL_BASICS, duration: 1 },
+      webGlExtensions: {
+        value: { extensions: ['EXT_a'], parameters: ['p=1'] },
+        duration: 1,
+      },
+    })
+    expect(out.webgl).toBe('Google Inc. (Intel)|ANGLE (Intel)')
+    expect(out.webgl_extensions).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  it('hashes the canvas object into a stable category value', () => {
+    const canvas = { winding: true, geometry: 'skipped', text: 'skipped' }
+    const a = adaptFingerprintComponents({
+      canvas: { value: canvas, duration: 9 },
+    })
+    const b = adaptFingerprintComponents({
+      canvas: {
+        value: { text: 'skipped', geometry: 'skipped', winding: true },
+        duration: 3,
+      },
+    })
+    expect(a.canvas).toMatch(/^[0-9a-f]{32}$/)
+    expect(b.canvas).toBe(a.canvas)
+    const c = adaptFingerprintComponents({
+      canvas: { value: { ...canvas, winding: false }, duration: 9 },
+    })
+    expect(c.canvas).not.toBe(a.canvas)
+  })
+
+  it('formats screenResolution as WxH and drops it when a dimension is null', () => {
+    const ok = adaptFingerprintComponents({
+      screenResolution: { value: [1440, 2560], duration: 0 },
+    })
+    expect(ok.screen).toBe('1440x2560')
+    const partial = adaptFingerprintComponents({
+      screenResolution: { value: [null, 1080], duration: 0 },
+    })
+    expect(partial).not.toHaveProperty('screen')
+  })
+
+  it('flattens languages in order without duplicates', () => {
+    const out = adaptFingerprintComponents({
+      languages: { value: [['en-US'], ['en-US', 'en']], duration: 0 },
+    })
+    expect(out.languages).toBe('en-US,en')
   })
 
   it('passes an unmapped scalar through under its FJS name', () => {
@@ -81,13 +162,30 @@ describe('adaptFingerprintComponents', () => {
     expect(out.colorDepth).toBe(24)
   })
 
-  it('drops an unmapped non-scalar (object or array)', () => {
+  it('hashes an unmapped non-scalar under its FJS name, independent of key order', () => {
     const out = adaptFingerprintComponents({
       domBlockers: { value: ['x'], duration: 2 },
-      math: { value: { sin: 1 }, duration: 4 },
+      touchSupport: {
+        value: { maxTouchPoints: 5, touchEvent: true, touchStart: true },
+        duration: 4,
+      },
     })
-    expect(out).not.toHaveProperty('domBlockers')
-    expect(out).not.toHaveProperty('math')
+    expect(out.domBlockers).toMatch(/^[0-9a-f]{32}$/)
+    const reordered = adaptFingerprintComponents({
+      touchSupport: {
+        value: { touchStart: true, touchEvent: true, maxTouchPoints: 5 },
+        duration: 1,
+      },
+    })
+    expect(reordered.touchSupport).toBe(out.touchSupport)
+  })
+
+  it('drops null-valued components (FJS "not available")', () => {
+    const out = adaptFingerprintComponents({
+      osCpu: { value: null, duration: 0 },
+      userAgentData: { value: undefined, duration: 0 },
+    })
+    expect(Object.keys(out)).toHaveLength(0)
   })
 
   it('drops an FJS error component (no value property)', () => {
@@ -96,15 +194,6 @@ describe('adaptFingerprintComponents', () => {
     })
     expect(out).not.toHaveProperty('audio')
     expect(Object.keys(out)).toHaveLength(0)
-  })
-
-  it('maps webGlExtensions to webgl with last-wins on collision', () => {
-    // Both map to `webgl`; the later-iterated entry wins.
-    const out = adaptFingerprintComponents({
-      webGlBasics: { value: 'basics', duration: 1 },
-      webGlExtensions: { value: 'extensions', duration: 1 },
-    })
-    expect(out.webgl).toBe('extensions')
   })
 
   it('lets a mapped value win a collision with an unmapped passthrough', () => {

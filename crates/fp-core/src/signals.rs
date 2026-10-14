@@ -162,8 +162,8 @@ impl PassiveSignals {
     /// clamps to `[0, 1]`; positive boosts, negative downgrades.
     ///
     /// Only the UA-vs-TLS consistency verdict moves confidence: agreement gives a
-    /// small [`CONSISTENT_BOOST`], an outright [`TlsConsistency::Mismatch`] gives
-    /// the strong [`MISMATCH_PENALTY`] downgrade (the anti-forgery core, architecture §4.2),
+    /// small `CONSISTENT_BOOST`, an outright [`TlsConsistency::Mismatch`] gives
+    /// the strong `MISMATCH_PENALTY` downgrade (the anti-forgery core, architecture §4.2),
     /// and a [`TlsConsistency::Degraded`] read is neutral — a missing connection
     /// signal never penalises (auto-degrade, §4.2). The [`IpRisk`] band is
     /// auxiliary and surfaced to downstream risk consumers (§5), not folded into
@@ -412,7 +412,7 @@ fn classify_ja4(ja4: &str) -> ClientStack {
 /// residential proxy pool but sharing one Chrome JA4 class shows a per-class
 /// new-device rate the per-IP key alone cannot see.
 ///
-/// Reuses [`parse_ja4_shape`] (HARDEN-001). Returns `None` when the `JA4_a`
+/// Reuses `parse_ja4_shape` (HARDEN-001). Returns `None` when the `JA4_a`
 /// prefix is missing / malformed / too short, so the caller records no
 /// JA4-class event (cold-start neutral).
 pub fn ja4_class(ja4: &str) -> Option<String> {
@@ -442,7 +442,7 @@ pub const INTEGRITY_PROBES: [&str; 4] = ["canvas", "webgl", "audio", "rect"];
 /// [`ClientIntegrity::Noise`] **and** the deployment has opted into the penalty.
 ///
 /// TUNING PLACEHOLDER (a policy guess, not a measured claim): of the same order
-/// as [`MISMATCH_PENALTY`] but softer, because legitimate privacy tooling (Brave
+/// as `MISMATCH_PENALTY` but softer, because legitimate privacy tooling (Brave
 /// farbling, canvas blockers, `resistFingerprinting`) injects the same kind of
 /// noise for real users. Deployments keep the penalty off until a real-traffic
 /// false-positive rate exists; the verdict is always surfaced regardless.

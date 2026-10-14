@@ -1,0 +1,218 @@
+{
+  "meta": {
+    "label": "stock-firefox",
+    "mode": "stock",
+    "controller": "playwright-core",
+    "binary": "stock-firefox",
+    "persona": "native",
+    "seed": null,
+    "args": [],
+    "browser_version": "151.0",
+    "chromium_major": 0,
+    "captured_at": "2026-10-14T07:31:35.958Z"
+  },
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+  "raw_components": {
+    "userAgentData": {
+      "duration": 13
+    },
+    "fonts": {
+      "value": [],
+      "duration": 450
+    },
+    "domBlockers": {
+      "duration": 15
+    },
+    "fontPreferences": {
+      "value": {
+        "default": 140.73333740234375,
+        "apple": 140.73333740234375,
+        "serif": 140.73333740234375,
+        "sans": 140.73333740234375,
+        "mono": 102,
+        "min": 8.783340454101562,
+        "system": 140.73333740234375
+      },
+      "duration": 444
+    },
+    "audio": {
+      "value": 35.749972093850374,
+      "duration": 2
+    },
+    "screenFrame": {
+      "duration": 0
+    },
+    "canvas": {
+      "value": {
+        "winding": true,
+        "geometry": "skipped",
+        "text": "skipped"
+      },
+      "duration": 1
+    },
+    "osCpu": {
+      "value": "Linux x86_64",
+      "duration": 0
+    },
+    "languages": {
+      "value": [["en-US"], ["en-US", "en"]],
+      "duration": 0
+    },
+    "colorDepth": {
+      "value": 24,
+      "duration": 0
+    },
+    "deviceMemory": {
+      "duration": 0
+    },
+    "screenResolution": {
+      "value": [768, 1366],
+      "duration": 0
+    },
+    "hardwareConcurrency": {
+      "value": 8,
+      "duration": 0
+    },
+    "timezone": {
+      "value": "UTC",
+      "duration": 0
+    },
+    "sessionStorage": {
+      "value": true,
+      "duration": 0
+    },
+    "localStorage": {
+      "value": true,
+      "duration": 0
+    },
+    "indexedDB": {
+      "value": true,
+      "duration": 1
+    },
+    "openDatabase": {
+      "value": false,
+      "duration": 0
+    },
+    "cpuClass": {
+      "duration": 0
+    },
+    "platform": {
+      "value": "Linux x86_64",
+      "duration": 0
+    },
+    "plugins": {
+      "value": [],
+      "duration": 0
+    },
+    "touchSupport": {
+      "value": {
+        "maxTouchPoints": 0,
+        "touchEvent": false,
+        "touchStart": false
+      },
+      "duration": 0
+    },
+    "vendor": {
+      "value": "",
+      "duration": 0
+    },
+    "vendorFlavors": {
+      "value": [],
+      "duration": 0
+    },
+    "cookiesEnabled": {
+      "value": true,
+      "duration": 1
+    },
+    "colorGamut": {
+      "value": "srgb",
+      "duration": 0
+    },
+    "invertedColors": {
+      "duration": 0
+    },
+    "forcedColors": {
+      "value": false,
+      "duration": 0
+    },
+    "monochrome": {
+      "value": 0,
+      "duration": 0
+    },
+    "contrast": {
+      "value": 0,
+      "duration": 0
+    },
+    "reducedMotion": {
+      "value": false,
+      "duration": 0
+    },
+    "reducedTransparency": {
+      "duration": 0
+    },
+    "hdr": {
+      "value": false,
+      "duration": 0
+    },
+    "math": {
+      "value": {
+        "acos": 1.4473588658278522,
+        "acosh": 709.889355822726,
+        "acoshPf": 355.291251501643,
+        "asin": 0.12343746096704435,
+        "asinh": 0.881373587019543,
+        "asinhPf": 0.8813735870195429,
+        "atanh": 0.5493061443340548,
+        "atanhPf": 0.5493061443340548,
+        "atan": 0.4636476090008061,
+        "sin": 0.8178819121159085,
+        "sinh": 1.1752011936438014,
+        "sinhPf": 2.534342107873324,
+        "cos": -0.8390715290095377,
+        "cosh": 1.5430806348152437,
+        "coshPf": 1.5430806348152437,
+        "tan": -1.4214488238747245,
+        "tanh": 0.7615941559557649,
+        "tanhPf": 0.7615941559557649,
+        "exp": 2.718281828459045,
+        "expm1": 1.718281828459045,
+        "expm1Pf": 1.718281828459045,
+        "log1p": 2.3978952727983707,
+        "log1pPf": 2.3978952727983707,
+        "powPI": 1.9275814160560206e-50
+      },
+      "duration": 0
+    },
+    "pdfViewerEnabled": {
+      "value": false,
+      "duration": 0
+    },
+    "architecture": {
+      "value": 255,
+      "duration": 0
+    },
+    "applePay": {
+      "value": -1,
+      "duration": 0
+    },
+    "privateClickMeasurement": {
+      "duration": 0
+    },
+    "audioBaseLatency": {
+      "value": -2,
+      "duration": 0
+    },
+    "dateTimeLocale": {
+      "value": "en-US",
+      "duration": 0
+    },
+    "webGlBasics": {
+      "value": -1,
+      "duration": 1
+    },
+    "webGlExtensions": {
+      "value": -1,
+      "duration": 0
+    }
+  }
+}

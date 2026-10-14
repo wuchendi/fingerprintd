@@ -6,6 +6,7 @@
  *   node driver.mjs --mode cloak --seeds 12345,12345,54321,random,off \
  *        --persona windows --page /data/out/harness.js --out /data/out/runs
  *   node driver.mjs --mode stock --page /data/out/harness.js --out /data/out/runs
+ *        (stock = Chromium headless-shell + headless-new, Firefox, WebKit)
  *
  * The harness page is served through `page.route` on `http://localhost/` (a
  * secure context, no HTTP server needed). One JSON file is written per run.
@@ -55,6 +56,7 @@ async function capture(browser, meta) {
     return {
       meta: {
         ...meta,
+        browser_version: browser.version(),
         chromium_major: Number(chromium),
         captured_at: new Date().toISOString(),
       },
@@ -117,20 +119,29 @@ if (mode === 'cloak') {
     }
   }
 } else {
-  const { chromium } = await import('playwright-core')
+  const engines = await import('playwright-core')
   const exe = process.env.CHROME_EXE
+  // Firefox / WebKit give the client↔server contract fixtures non-Chromium
+  // FingerprintJS shapes. Playwright WebKit is NOT Safari (no Safari-only
+  // stabilizations or AFP noise) — real iOS still needs a real device.
   const variants = [
-    ['stock-headless-shell', {}],
-    ['stock-headless-new', { args: ['--headless=new'], executablePath: exe }],
+    ['stock-headless-shell', 'chromium', {}],
+    [
+      'stock-headless-new',
+      'chromium',
+      { args: ['--headless=new'], executablePath: exe },
+    ],
+    ['stock-firefox', 'firefox', {}],
+    ['stock-webkit', 'webkit', {}],
   ]
-  for (const [label, opts] of variants) {
-    const browser = await chromium.launch({ headless: true, ...opts })
+  for (const [label, engine, opts] of variants) {
+    const browser = await engines[engine].launch({ headless: true, ...opts })
     try {
       const record = await capture(browser, {
         label,
         mode,
         controller: 'playwright-core',
-        binary: 'stock-chromium',
+        binary: `stock-${engine}`,
         persona: 'native',
         seed: null,
         args: opts.args ?? [],

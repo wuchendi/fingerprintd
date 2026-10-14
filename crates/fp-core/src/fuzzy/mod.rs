@@ -333,6 +333,13 @@ impl FuzzyStore {
             .collect()
     }
 
+    /// Names of the components in `components` that the schema stores (sorted),
+    /// i.e. the ones that take part in matching. Missing, `null`, and
+    /// type-mismatched values are excluded (fuzzy-matching §8).
+    pub fn stored_component_names(&self, components: &Value) -> Vec<String> {
+        self.stored_map(components).into_keys().collect()
+    }
+
     /// Convert a raw JSON component object into its stored-form map, dropping
     /// missing or type-mismatched entries (fuzzy-matching §8). Shared by [`observe`],
     /// [`candidates`], and the stage-two scorer.
@@ -489,6 +496,20 @@ mod tests {
         let record = store.record("v1").unwrap();
         assert!(record.components.contains_key("webgl"));
         assert!(!record.components.contains_key("canvas"));
+    }
+
+    #[test]
+    fn stored_component_names_lists_only_storable_components() {
+        let store = FuzzyStore::new();
+        let names = store.stored_component_names(&json!({
+            "webgl": "ANGLE (Intel)",
+            "screen": "1920x1080",
+            "fonts": ["Arial"],
+            "canvas": null,
+            "touchSupport": { "maxTouchPoints": 5 },
+        }));
+        // Sorted; null and object values are not stored.
+        assert_eq!(names, ["fonts", "screen", "webgl"]);
     }
 
     #[test]

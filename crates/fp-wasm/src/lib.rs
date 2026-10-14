@@ -218,6 +218,14 @@ impl FpEngine {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// Names of the components the matcher stores for `components_json`, as a
+    /// sorted JSON array — the client↔server contract check (what actually
+    /// takes part in matching). Invalid JSON surfaces as a thrown JS exception.
+    pub fn stored_components(&self, components_json: &str) -> Result<String, JsError> {
+        self.stored_components_impl(components_json)
+            .map_err(|e| JsError::new(&e))
+    }
+
     /// Score a probe against host-supplied candidates and return the verdict as
     /// JSON, **without** mutating any state.
     ///
@@ -274,6 +282,14 @@ impl FpEngine {
             .map_err(|e| format!("invalid components JSON: {e}"))?;
         let keys = self.store().blocking_key_hexes(&components);
         serde_json::to_string(&keys).map_err(|e| e.to_string())
+    }
+
+    /// Native-testable core of [`FpEngine::stored_components`].
+    fn stored_components_impl(&self, components_json: &str) -> Result<String, String> {
+        let components: Value = serde_json::from_str(components_json)
+            .map_err(|e| format!("invalid components JSON: {e}"))?;
+        let names = self.store().stored_component_names(&components);
+        serde_json::to_string(&names).map_err(|e| e.to_string())
     }
 
     /// Native-testable core of [`FpEngine::score`], erroring as a plain `String`.
@@ -462,6 +478,16 @@ mod tests {
     }
 
     /// An empty candidate set is judged a new device with a derived id.
+    #[test]
+    fn stored_components_lists_the_storable_names() {
+        let engine = FpEngine::new("s", "k", "k");
+        let probe = json!({ "webgl": "x", "canvas": null, "math": { "sin": 1 } }).to_string();
+        let names: Vec<String> =
+            serde_json::from_str(&engine.stored_components_impl(&probe).unwrap()).unwrap();
+        assert_eq!(names, ["webgl"]);
+        assert!(engine.stored_components_impl("not json").is_err());
+    }
+
     #[test]
     fn score_with_no_candidates_is_new_device() {
         let engine = FpEngine::new("salt-secret", "pk", "sk");

@@ -7,7 +7,6 @@ rust-version.workspace = true
 authors.workspace      = true
 license.workspace      = true
 repository.workspace   = true
-homepage.workspace     = true
 keywords    = ["fingerprinting", "wasm", "anti-fraud", "device-id"]
 categories  = ["wasm", "algorithms"]
 publish     = false
@@ -30,7 +29,7 @@ wasm-bindgen = "0.2"
 # The framework-free core, without its `rng` feature: the edge host uses only
 # the deterministic, seed-derived compute, so `rand`/`getrandom` (unsupported on
 # `wasm32-unknown-unknown`) stays out of the wasm build graph.
-fingerprintd = { path = "../fp-core", version = "0.0.1", default-features = false }
+fingerprintd = { path = "../fp-core", version = "0.0.2", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hmac = { workspace = true }

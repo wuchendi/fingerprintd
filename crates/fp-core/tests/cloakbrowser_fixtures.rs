@@ -79,17 +79,16 @@ fn same_seed_captures_are_identical_and_match_the_same_device() {
     assert_eq!(second.visitor_id, first.visitor_id);
 }
 
-/// The adapter drops `FingerprintJS's` object-valued `canvas` / `webGlBasics` and
-/// the array-valued `screenResolution` (documented follow-up in
-/// `packages/client/src/adapter.ts`), and the Linux container exposes none of
-/// the fonts `FingerprintJS` probes. What reaches the engine from a re-seeded
-/// `CloakBrowser` launch therefore differs from the previous seed in `audio`
-/// ONLY — every other stored component is identical. This test pins how the
-/// engine treats that: `audio` is a high-stability blocking key, so each
-/// re-seeded launch misses recall and is minted as a brand-new device — the
-/// fresh-seed farm footprint the velocity signal counts. Load-bearing caveat:
-/// the whole per-seed distinction rides on ONE component today; canvas/webgl
-/// entropy only enters matching once the adapter canonicalizes those objects.
+/// These captures predate the adapter's canonicalization of object/array
+/// components: they were taken when it still dropped `FingerprintJS's`
+/// `canvas` / `webGlBasics` / `screenResolution`, and the Linux container
+/// exposes none of the fonts `FingerprintJS` probes. What reaches the engine
+/// from a re-seeded `CloakBrowser` launch in this old shape therefore differs
+/// from the previous seed in `audio` ONLY. This test pins how the engine treats
+/// that worst case: `audio` is a high-stability blocking key, so each re-seeded
+/// launch misses recall and is minted as a brand-new device — the fresh-seed
+/// farm footprint the velocity signal counts. Current SDK output (canvas /
+/// webgl included) is covered by `packages/client/tests/integration/fjs-contract.test.ts`.
 #[test]
 fn distinct_seeds_differ_only_in_audio_and_each_mint_a_new_device() {
     let all = fixtures();

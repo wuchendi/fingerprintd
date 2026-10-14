@@ -3,13 +3,12 @@ resolver = "3"
 members  = ["crates/fp-core", "crates/fingerprintd", "crates/fp-wasm"]
 
 [workspace.package]
-version      = "0.0.1"
+version      = "0.0.2"
 edition      = "2024"
 rust-version = "1.96.0"
 authors      = ["cdlab"]
 license      = "Apache-2.0"
 repository   = "https://github.com/WuChenDi/fingerprintd"
-homepage     = "https://github.com/WuChenDi/fingerprintd"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
