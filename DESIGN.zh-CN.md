@@ -380,11 +380,11 @@ GDPR 被遗忘权(§7)。受 admin-key 门控(`admin_key`):未设置 ⇒ 该路�
 | Component | Type | Stability | Distinctiveness | Notes |
 |---|---|---|---|---|
 | WebGL vendor+renderer | category | high | medium | GPU 硬件,极少变化 |
-| Canvas hash | category | med-high | high | 驱动/浏览器升级时整体翻转 |
+| Canvas hash | category | low | high | 驱动/浏览器升级时整体翻转;隐私/反检测浏览器会按会话加噪 |
 | Audio fingerprint | category | high | med-high | 音频栈,稳定 |
 | Font list | set | medium | high | 增量变化 → Jaccard/MinHash |
 | Timezone / language / platform | category | high | low | 低熵,单独不足 |
-| Screen resolution + depth | numeric | medium | med-low | 外接显示器会改变它 |
+| Screen resolution | category(`"WxH"`,长边在前) | medium | med-low | 外接显示器会改变它 |
 | CPU cores / device memory | numeric | high | low | |
 | Browser version / UA | version | **low** | medium | **雪崩之源**,每隔几周自动升级 |
 | Plugins / mimeTypes | set | medium | medium | |

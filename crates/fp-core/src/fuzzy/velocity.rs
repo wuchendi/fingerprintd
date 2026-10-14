@@ -183,8 +183,8 @@ impl VelocityBand {
     }
 
     /// Classify a new-device `count` into a band against explicit
-    /// `medium` / `high` thresholds. Shared by the per-IP key ([`classify`]) and
-    /// the per-JA4-class key ([`classify_ja4`]), whose thresholds differ by
+    /// `medium` / `high` thresholds. Shared by the per-IP key ([`classify`](Self::classify)) and
+    /// the per-JA4-class key ([`classify_ja4`](Self::classify_ja4)), whose thresholds differ by
     /// orders of magnitude.
     pub fn classify_with(count: u64, medium: u64, high: u64) -> VelocityBand {
         if count >= high {

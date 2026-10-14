@@ -53,6 +53,13 @@ jobs:
       - name: Build
         run: cargo build --all-targets
 
+      # docs.rs builds the published crate with the workspace lints, where
+      # `warnings = "deny"` turns any rustdoc warning into a failed build.
+      - name: Docs (published crate)
+        run: cargo doc -p fingerprintd --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: Supply-chain (cargo-deny)
         run: cargo deny check
 

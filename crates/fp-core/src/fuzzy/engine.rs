@@ -108,7 +108,7 @@ pub struct MatchOutcome {
     pub score: Option<f64>,
     /// Number of components that actually participated in scoring (fuzzy-matching §8).
     pub compared_components: usize,
-    /// Whether a runner-up also cleared `T_hi` within [`COLLISION_GAP`].
+    /// Whether a runner-up also cleared `T_hi` within `COLLISION_GAP`.
     pub collision_risk: bool,
     /// Cross-session new-device production-rate band for the client IP, a risk
     /// signal surfaced alongside `ip_risk` (never folded into identity). Always
@@ -181,7 +181,7 @@ impl FuzzyStore {
     ///   event for that IP and bands the trailing-window count into
     ///   [`MatchOutcome::new_device_velocity`] via [`VelocityBand::classify`]. A
     ///   [`VelocityBand::High`] rate — the fresh-seed-per-launch farm's footprint
-    ///   — applies the documented [`VELOCITY_PENALTY`] confidence downgrade, fused
+    ///   — applies the documented `VELOCITY_PENALTY` confidence downgrade, fused
     ///   like `PassiveSignals::confidence_adjustment` (`signals.rs`).
     /// - **per-JA4-class** (PLAN-006 HARDEN-002): when `ja4` parses to a coarse
     ///   class ([`crate::signals::ja4_class`]), records a new-device event for
@@ -282,7 +282,7 @@ impl FuzzyStore {
 
     /// Score `components` and decide, **without mutating** the store (fuzzy-matching §5).
     ///
-    /// The pure half of [`identify`]: stage-one recall, Fellegi–Sunter scoring,
+    /// The pure half of [`identify`](Self::identify): stage-one recall, Fellegi–Sunter scoring,
     /// and the double-threshold decision. It returns the same [`MatchOutcome`]
     /// `identify` would but leaves the record library, blocking index, and
     /// frequency table untouched — the entry point a stateless edge host calls

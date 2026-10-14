@@ -9,6 +9,7 @@ Chromium as the negative control. Each run produces one JSON capture:
 {
   "meta": { "label", "mode", "controller", "binary", "persona", "seed", "args", "captured_at" },
   "user_agent": "...",
+  "raw_components": { "...un-adapted FingerprintJS components..." },
   "stable_components": { "...exactly what /identify would receive..." },
   "integrity_measurements": { "canvas", "webgl", "audio", "rect" }
 }
@@ -20,6 +21,7 @@ Chromium as the negative control. Each run produces one JSON capture:
 bash scripts/redteam/cloak/run.sh                       # default seeds + stock control
 SEEDS=12345,12345,54321,random,off PERSONA=windows bash scripts/redteam/cloak/run.sh
 SKIP_STOCK=1 bash scripts/redteam/cloak/run.sh          # adversary only
+SKIP_CLOAK=1 bash scripts/redteam/cloak/run.sh          # stock Chromium/Firefox/WebKit only
 ```
 
 Requires Docker (containers are launched as labelled siblings, `--label
@@ -35,6 +37,14 @@ Curated captures are checked in under
 tests in `crates/fp-core/tests/cloakbrowser_fixtures.rs` and the client
 integrity-probe tests. File names carry binary, persona and seed so a capture
 from a newer binary can be added beside the old one.
+
+The stock captures' `raw_components` (Chromium, Firefox, WebKit) are checked in
+under `packages/client/tests/fixtures/fjs-raw/` as the client↔server contract
+fixtures (`packages/client/tests/integration/fjs-contract.test.ts`). Refresh
+them after a FingerprintJS upgrade: `SKIP_CLOAK=1 bash scripts/redteam/cloak/run.sh`,
+then copy `{meta, user_agent, raw_components}` of `stock-headless-new`,
+`stock-firefox`, `stock-webkit`. Playwright WebKit is not Safari — real iOS
+behaviour still needs a real device.
 
 ## Layout
 

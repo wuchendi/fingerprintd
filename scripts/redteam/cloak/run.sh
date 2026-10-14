@@ -11,6 +11,7 @@
 #   bash scripts/redteam/cloak/run.sh                 # default seeds + control
 #   SEEDS=12345,12345,54321,random,off PERSONA=windows bash scripts/redteam/cloak/run.sh
 #   SKIP_STOCK=1 bash scripts/redteam/cloak/run.sh    # adversary only
+#   SKIP_CLOAK=1 bash scripts/redteam/cloak/run.sh    # stock engines only (no 2.5 GB image)
 #
 # Requires: docker (sibling containers on the host daemon), bun. Not part of CI.
 set -euo pipefail
@@ -43,12 +44,14 @@ common=(--rm --label ai-agent=true --network traefik
   -v "$HOST_DIR/driver.mjs:/data/driver.mjs:ro"
   -v "$HOST_DIR/out:/data/out")
 
-echo "==> adversary: $CLOAK_IMAGE (persona=$PERSONA seeds=$SEEDS)"
-docker run "${common[@]}" --name "ai-agent-fingerprintd-redteam-cloak-$$" \
-  -e CLOAKBROWSER_SUPPRESS_FONT_WARNING=1 \
-  "$CLOAK_IMAGE" bash -c \
-  'cp /data/driver.mjs /app/js/driver.mjs && node /app/js/driver.mjs --mode cloak --seeds "$0" --persona "$1" --page /data/out/harness.js --out /data/out/runs' \
-  "$SEEDS" "$PERSONA" 2>&1 | grep -v "^$" | grep -E "^\[harness\]|Error|error" || true
+if [ -z "${SKIP_CLOAK:-}" ]; then
+  echo "==> adversary: $CLOAK_IMAGE (persona=$PERSONA seeds=$SEEDS)"
+  docker run "${common[@]}" --name "ai-agent-fingerprintd-redteam-cloak-$$" \
+    -e CLOAKBROWSER_SUPPRESS_FONT_WARNING=1 \
+    "$CLOAK_IMAGE" bash -c \
+    'cp /data/driver.mjs /app/js/driver.mjs && node /app/js/driver.mjs --mode cloak --seeds "$0" --persona "$1" --page /data/out/harness.js --out /data/out/runs' \
+    "$SEEDS" "$PERSONA" 2>&1 | grep -v "^$" | grep -E "^\[harness\]|Error|error" || true
+fi
 
 if [ -z "${SKIP_STOCK:-}" ]; then
   echo "==> control: $STOCK_IMAGE"

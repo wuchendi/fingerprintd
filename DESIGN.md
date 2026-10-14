@@ -441,11 +441,11 @@ Each component is characterized on two orthogonal axes — the source of every w
 | Component | Type | Stability | Distinctiveness | Notes |
 |---|---|---|---|---|
 | WebGL vendor+renderer | category | high | medium | GPU hardware, rarely changes |
-| Canvas hash | category | med-high | high | flips wholesale on driver/browser upgrade |
+| Canvas hash | category | low | high | flips wholesale on driver/browser upgrade; noised per session by privacy / anti-detect browsers |
 | Audio fingerprint | category | high | med-high | audio stack, stable |
 | Font list | set | medium | high | incremental change → Jaccard/MinHash |
 | Timezone / language / platform | category | high | low | low entropy, insufficient alone |
-| Screen resolution + depth | numeric | medium | med-low | external display changes it |
+| Screen resolution | category (`"WxH"`, longer side first) | medium | med-low | external display changes it |
 | CPU cores / device memory | numeric | high | low | |
 | Browser version / UA | version | **low** | medium | **the avalanche source**, auto-upgrades every few weeks |
 | Plugins / mimeTypes | set | medium | medium | |

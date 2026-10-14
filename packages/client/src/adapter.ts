@@ -15,26 +15,25 @@
  *  1. unwrap the `{ value, duration }` wrapper (dropping FJS error components,
  *     which carry `{ error, duration }` and no `value`);
  *  2. rename FJS keys to their server-schema counterparts ({@link KEY_MAP});
- *  3. normalize each value to the storable kind the server expects, dropping
- *     anything it cannot store.
+ *  3. normalize each value to the storable kind the server expects: object/array
+ *     values are canonicalized per field ({@link CANONICALIZERS}), any other
+ *     non-scalar is hashed under its FJS name, so no component carrying a value
+ *     is silently dropped.
  *
- * SCOPE: this is the wrapper + key-name mismatch only. Some real FJS values
- * (webgl/canvas) are objects and so drop here — recovering that entropy needs a
- * per-field canonicalization pass, which is a documented follow-up, NOT this
- * unit. Wiring this adapter into `fingerprint.ts` and the cross-stack proof are
- * a SEPARATE unit (part b); this file only defines and tests the transform.
+ * The contract against real browser output is
+ * `tests/integration/fjs-contract.test.ts`.
  */
+
+import { murmurX64Hash128 } from '@fingerprintjs/fingerprintjs'
 
 /**
  * FJS component name → server-schema name. The target names are exactly the set
- * `crates/fp-core/src/fuzzy/mod.rs` `classify()` recognizes; keep this table in
- * sync with that authoritative list.
+ * `crates/fp-core/src/fuzzy/component.rs` `classify()` recognizes; keep this
+ * table in sync with that authoritative list.
  *
- * `webGlExtensions` also maps to `webgl`: when both it and `webGlBasics` are
- * present the later-iterated entry wins (last-wins). FingerprintJS exposes NO
- * raw userAgent among its stable components, so `user_agent` is intentionally
- * left unmapped — the UA rides separately under `botd`, which this unit does not
- * touch.
+ * FingerprintJS exposes NO raw userAgent among its stable components, so
+ * `user_agent` is intentionally left unmapped — the UA rides separately under
+ * `botd`, which this unit does not touch.
  */
 const KEY_MAP: Record<string, string> = {
   hardwareConcurrency: 'cpu_cores',
@@ -48,7 +47,7 @@ const KEY_MAP: Record<string, string> = {
   audio: 'audio',
   canvas: 'canvas',
   webGlBasics: 'webgl',
-  webGlExtensions: 'webgl',
+  webGlExtensions: 'webgl_extensions',
 }
 
 /**
@@ -67,13 +66,65 @@ function isScalar(value: unknown): value is string | number | boolean {
   )
 }
 
+/** JSON with object keys sorted, so a hash does not depend on key order. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : v,
+  )
+}
+
+/** Compact, order-independent digest of a bulky object/array value. The
+ *  server salts and hashes it again; this only keeps the payload small. */
+function digest(value: unknown): string {
+  return murmurX64Hash128(stableJson(value))
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * Per-FJS-key canonicalizers for object/array values, returning the storable
+ * value or `undefined` to drop. FJS reports "no WebGL context" as the numeric
+ * status `-1`/`-2`; those are dropped rather than stored as a GPU identity.
+ */
+const CANONICALIZERS: Record<string, (value: unknown) => unknown> = {
+  webGlBasics: (v) => {
+    if (!isObject(v)) return undefined
+    const vendor = v.vendorUnmasked || v.vendor
+    const renderer = v.rendererUnmasked || v.renderer
+    return `${vendor ?? ''}|${renderer ?? ''}`
+  },
+  webGlExtensions: (v) => (isObject(v) ? digest(v) : undefined),
+  canvas: (v) => (isObject(v) ? digest(v) : undefined),
+  // Already sorted longer-side first by FJS, so rotation does not change it.
+  screenResolution: (v) =>
+    Array.isArray(v) && v.length === 2 && v.every((d) => typeof d === 'number')
+      ? `${v[0]}x${v[1]}`
+      : undefined,
+  languages: (v) =>
+    Array.isArray(v)
+      ? [...new Set(v.flat().filter((l) => typeof l === 'string'))].join(',')
+      : undefined,
+  plugins: (v) =>
+    Array.isArray(v)
+      ? v
+          .map((p) => (isObject(p) ? p.name : p))
+          .filter((n): n is string => typeof n === 'string')
+      : undefined,
+}
+
 /**
  * Reshape raw FingerprintJS `components` into the Rust server's matching schema.
  *
  * Per entry: unwrap `{ value, duration }` (dropping error components without a
- * `value`), then either rename via {@link KEY_MAP} and type-normalize, or — for
- * unrecognized names — pass the unwrapped value through under its ORIGINAL FJS
- * name when it is a scalar. On a name collision the mapped value wins.
+ * `value`), canonicalize via {@link CANONICALIZERS}, drop `null`/`undefined`,
+ * then either rename via {@link KEY_MAP} and type-normalize, or — for
+ * unrecognized names — pass the value through under its ORIGINAL FJS name
+ * (hashed when it is an object/array). On a name collision the mapped value wins.
  */
 export function adaptFingerprintComponents(
   components: Record<string, unknown>,
@@ -94,7 +145,10 @@ export function adaptFingerprintComponents(
     ) {
       continue
     }
-    const value = (entry as { value: unknown }).value
+    const raw = (entry as { value: unknown }).value
+    const canonicalize = CANONICALIZERS[key]
+    const value = canonicalize ? canonicalize(raw) : raw
+    if (value === null || value === undefined) continue
 
     const target = KEY_MAP[key]
     if (target !== undefined) {
@@ -104,15 +158,15 @@ export function adaptFingerprintComponents(
           mapped[target] = value
         }
       } else if (isScalar(value)) {
-        // Category/Numeric fields keep only scalars. Real FJS webgl/canvas
-        // values are objects and drop here — out of this adapter's scope (see file doc).
         mapped[target] = value
       }
     } else if (isScalar(value)) {
-      // Unknown FJS name: the server defaults it to a medium-stability category,
-      // so a scalar still carries entropy. Non-scalars are undroppable
-      // server-side, so drop them here.
+      // Unknown FJS name: the server defaults it to a medium-stability category.
       passthrough[key] = value
+    } else {
+      // Unmapped object/array (touchSupport, userAgentData, math, …): hash it
+      // so its entropy still reaches the matcher as a category value.
+      passthrough[key] = digest(value)
     }
   }
 

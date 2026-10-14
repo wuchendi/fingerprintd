@@ -11,13 +11,13 @@
 //! - **collision rate** — of all observations, the fraction merged onto a
 //!   `visitorId` first minted by a *different* ground-truth device (碰撞率).
 //!
-//! The bundled [`synthetic`] fixture is hand-authored to exercise the engine
+//! The bundled [`Fixture::synthetic`] fixture is hand-authored to exercise the engine
 //! **directionally** — same-device visits drift only slightly (a browser
 //! upgrade, one font swap) while distinct devices disagree on every
 //! high-stability discriminant. It is a smoke test for the scoring wiring, not
 //! evidence for the numeric targets.
 //!
-//! TODO(real-data): replace [`synthetic`] with a real labelled corpus (design
+//! TODO(real-data): replace [`Fixture::synthetic`] with a real labelled corpus (design
 //! §10 ground truth) and grid-search `T_lo / T_hi / τ` and the component priors
 //! before claiming the architecture §3 95 %/1 % numbers. The rates this harness prints on
 //! synthetic input MUST NOT be reported as the production stability/collision

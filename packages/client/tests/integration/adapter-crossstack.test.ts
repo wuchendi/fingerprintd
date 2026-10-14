@@ -29,24 +29,17 @@ import initWasm, { FpEngine } from '../../wasm/fp_wasm.js'
 const WASM_PATH = resolve(process.cwd(), 'wasm/fp_wasm_bg.wasm')
 
 /**
- * A raw FingerprintJS-shaped fixture: each component is the FJS
- * `{ value, duration }` wrapper under FJS key names. After adaptation these map
- * onto the server-schema fields the matcher recognizes (webgl/platform/timezone
- * → K1, audio/cpu_cores/device_memory → K2, fonts → MinHash bands).
+ * A raw FingerprintJS capture from stock Chromium (`tests/fixtures/fjs-raw/`):
+ * each component is the FJS `{ value, duration }` wrapper under FJS key names,
+ * with real value shapes (object webgl/canvas, array screen/languages, …).
  */
 function fjsFixture(): Record<string, unknown> {
-  return {
-    platform: { value: 'Linux x86_64', duration: 1 },
-    timezone: { value: 'Asia/Shanghai', duration: 1 },
-    webGlBasics: { value: 'ANGLE (Intel)', duration: 2 }, // → webgl (scalar)
-    audio: { value: '124.04', duration: 5 },
-    hardwareConcurrency: { value: 8, duration: 1 }, // → cpu_cores
-    deviceMemory: { value: 8, duration: 1 }, // → device_memory
-    fonts: {
-      value: ['Arial', 'Helvetica', 'Courier', 'Times', 'Verdana'],
-      duration: 3,
-    },
-  }
+  return JSON.parse(
+    readFileSync(
+      resolve(process.cwd(), 'tests/fixtures/fjs-raw/chromium-149.json'),
+      'utf8',
+    ),
+  ).raw_components
 }
 
 describe('adapter cross-stack proof (FpEngine)', () => {

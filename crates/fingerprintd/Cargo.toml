@@ -7,7 +7,6 @@ rust-version.workspace = true
 authors.workspace      = true
 license.workspace      = true
 repository.workspace   = true
-homepage.workspace     = true
 keywords    = ["fingerprinting", "anti-fraud", "bot-detection", "device-id", "security"]
 categories  = ["web-programming::http-server", "authentication"]
 publish     = false
@@ -24,7 +23,7 @@ name = "fingerprintd_server"
 path = "src/lib.rs"
 
 [dependencies]
-fingerprintd = { path = "../fp-core", version = "0.0.1" }
+fingerprintd = { path = "../fp-core", version = "0.0.2" }
 # `time` (additive over the workspace features) powers the retention sweep's
 # `tokio::time::interval`; the rest come from the workspace dep.
 tokio = { workspace = true, features = ["time"] }

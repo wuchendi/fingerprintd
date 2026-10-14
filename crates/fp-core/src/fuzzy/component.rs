@@ -160,9 +160,11 @@ pub fn classify(name: &str) -> FieldSpec {
         }
         "cpu_cores" | "device_memory" => (Stability::High, Kind::Numeric),
         "fonts" | "plugins" => (Stability::Medium, Kind::Set),
-        "screen" => (Stability::Medium, Kind::Numeric),
-        "user_agent" => (Stability::Low, Kind::Category),
-        // "canvas" and unknown names fall through to the medium-category default.
+        // Canvas is noised per session by privacy / anti-detect browsers, so a
+        // mismatch must weigh less than a medium component.
+        "user_agent" | "canvas" => (Stability::Low, Kind::Category),
+        // `screen` (the SDK's `"WxH"` string, longer side first),
+        // `webgl_extensions`, and unknown names are medium-stability categories.
         _ => (Stability::Medium, Kind::Category),
     };
     FieldSpec { stability, kind }
@@ -170,7 +172,18 @@ pub fn classify(name: &str) -> FieldSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{Salt, Stability, jaccard};
+    use super::{Kind, Salt, Stability, classify, jaccard};
+
+    #[test]
+    fn screen_is_a_category_and_canvas_is_low_stability() {
+        // FJS screenResolution arrives as "WxH": a Numeric kind could not store it.
+        assert_eq!(classify("screen").kind, Kind::Category);
+        assert_eq!(classify("screen").stability, Stability::Medium);
+        // Canvas is noised by privacy/anti-detect browsers: low tier.
+        assert_eq!(classify("canvas").kind, Kind::Category);
+        assert_eq!(classify("canvas").stability, Stability::Low);
+        assert_eq!(classify("webgl_extensions").stability, Stability::Medium);
+    }
 
     #[test]
     fn same_value_hashes_stably_under_one_salt() {
