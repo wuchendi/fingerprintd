@@ -488,6 +488,52 @@ mod tests {
         assert!(engine.stored_components_impl("not json").is_err());
     }
 
+    /// An SDK-shaped phone: `n` varies every device-distinctive component, the
+    /// city-wide low-entropy values (booleans, locale, cores, memory, the
+    /// constant Android font probe, no plugins) are shared by every phone.
+    fn phone(n: u64) -> Value {
+        let h = |tag: &str| format!("{tag}{n:0>31}");
+        json!({
+            "userAgentData": h("u"), "fontPreferences": h("f"), "math": h("m"),
+            "canvas": h("c"), "webgl_extensions": h("x"), "screenFrame": h("s"),
+            "webgl": format!("ANGLE (GPU {n})"), "audio": format!("124.{n}"),
+            "screen": format!("{}x{}", 800 + n % 50, 380 + n % 20),
+            "colorDepth": 24, "sessionStorage": true, "localStorage": true,
+            "indexedDB": true, "cookiesEnabled": true, "vendor": "Google Inc.",
+            "hdr": false, "architecture": 127, "dateTimeLocale": "zh-CN",
+            "languages": "zh-CN", "timezone": "Asia/Shanghai",
+            "platform": "Linux armv81", "cpu_cores": 8, "device_memory": 8,
+            "fonts": ["sans-serif-thin"], "plugins": [],
+        })
+    }
+
+    /// The edge estimates `u_i` over the recalled block only. A stranger that
+    /// shares nothing but the common values must stay a new device whatever the
+    /// block size, while the same phone in the block is still matched.
+    #[test]
+    fn block_local_scoring_rejects_strangers_and_keeps_the_same_phone() {
+        let engine = FpEngine::new("s", "k", "k");
+        for size in [1_u64, 10, 100, 500] {
+            let candidates: Vec<Value> = (0..size)
+                .map(|n| json!({ "visitor_id": format!("p{n}"), "components": phone(n) }))
+                .collect();
+            let score = |probe: Value| -> Value {
+                let request = json!({ "components": probe, "candidates": candidates });
+                serde_json::from_str(&engine.score_impl(&request.to_string()).unwrap()).unwrap()
+            };
+
+            let stranger = score(phone(1_000_000));
+            assert_eq!(
+                stranger["decision"], "new_device",
+                "block {size}: {stranger}"
+            );
+
+            let same = score(phone(0));
+            assert_eq!(same["decision"], "match", "block {size}: {same}");
+            assert_eq!(same["visitor_id"], "p0");
+        }
+    }
+
     #[test]
     fn score_with_no_candidates_is_new_device() {
         let engine = FpEngine::new("salt-secret", "pk", "sk");

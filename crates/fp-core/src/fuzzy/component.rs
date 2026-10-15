@@ -91,6 +91,17 @@ pub enum Stored {
     Numeric(i64),
 }
 
+/// Order-independent digest of a stored hash set — the frequency key that lets
+/// a whole set (e.g. the constant Android font probe) be counted like a
+/// category value when estimating its `u_i`.
+pub fn set_digest(set: &BTreeSet<Hash32>) -> Hash32 {
+    let mut hasher = Sha256::new();
+    for element in set {
+        hasher.update(element);
+    }
+    hasher.finalize().into()
+}
+
 /// `Jaccard` similarity `|A ∩ B| / |A ∪ B|` between two stored hash sets.
 ///
 /// Two empty sets are defined as identical (`1.0`). Because elements are hashed
@@ -168,6 +179,28 @@ pub fn classify(name: &str) -> FieldSpec {
         _ => (Stability::Medium, Kind::Category),
     };
     FieldSpec { stability, kind }
+}
+
+/// Cold-start prior for `u_i = P(agree | different device)` — how often two
+/// unrelated devices share this component's value (fuzzy-matching §5/§9).
+///
+/// The frequency table refines it per component as observations accumulate
+/// (`FuzzyStore::u_estimate`). TUNING PLACEHOLDERS (judgement, not measured):
+/// device-distinctive renders and hardware strings are rare, locale-level
+/// values are common, and names the schema does not know — mostly
+/// `FingerprintJS` booleans and small enums — are treated as near-universal so
+/// that agreeing on them is no evidence until data says otherwise.
+pub fn u_prior(name: &str) -> f64 {
+    match name {
+        "canvas" => 0.02,
+        "webgl" | "webgl_extensions" | "audio" | "userAgentData" | "fonts" => 0.05,
+        "fontPreferences" | "screen" | "user_agent" => 0.1,
+        "timezone" | "screenFrame" => 0.2,
+        "languages" | "platform" | "cpu_cores" | "plugins" => 0.3,
+        "device_memory" => 0.4,
+        "math" | "touchSupport" | "domBlockers" => 0.5,
+        _ => 0.8,
+    }
 }
 
 #[cfg(test)]

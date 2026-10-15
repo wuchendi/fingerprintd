@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     FuzzyStore, classify,
-    component::{Hash32, Stored, jaccard},
+    component::{Hash32, Stored, jaccard, set_digest, u_prior},
     record::FingerprintRecord,
     velocity::{self, VelocityBand},
 };
@@ -39,9 +39,11 @@ const TAU: f64 = 0.5;
 /// Two candidates both `≥ T_hi` within this many bits are flagged as a
 /// collision risk (fuzzy-matching §5.4).
 const COLLISION_GAP: f64 = 2.0;
-/// Prior `u_i` for set components (fonts/plugins). The frequency table holds no
-/// per-set material, so set rarity uses this distinctive-by-default constant.
-const SET_U: f64 = 0.05;
+/// Pseudo-count weighting each component's `u_i` prior ([`u_prior`]) against
+/// its observed value frequency (fuzzy-matching §9). Holds the estimate near the
+/// prior on a cold or tiny library (a single recalled candidate), letting the
+/// observed frequency take over as sightings accumulate.
+const U_PSEUDO: f64 = 10.0;
 /// Lower/upper clamps keeping `u_i` in `(0, 1)` so the log-ratios stay finite.
 const U_FLOOR: f64 = 1e-4;
 const U_CEIL: f64 = 0.9999;
@@ -404,7 +406,7 @@ impl FuzzyStore {
             let Some(template_value) = template.components.get(name) else {
                 continue; // missing on the template side → not compared (§8)
             };
-            let Some((sim, _u)) = self.compare(probe_value, template_value) else {
+            let Some((sim, _u)) = self.compare(name, probe_value, template_value) else {
                 continue; // kind mismatch → not comparable
             };
             self.agreement.record(name, sim >= TAU);
@@ -423,7 +425,7 @@ impl FuzzyStore {
             let Some(template_value) = template.components.get(name) else {
                 continue; // missing on the template side → not compared (§8)
             };
-            let Some((sim, u)) = self.compare(probe_value, template_value) else {
+            let Some((sim, u)) = self.compare(name, probe_value, template_value) else {
                 continue; // kind mismatch → not comparable
             };
             let m = self.m_estimate(name, classify(name).stability.m_prior());
@@ -434,38 +436,43 @@ impl FuzzyStore {
     }
 
     /// Compare one component, returning its agreement fraction `sim ∈ [0, 1]`
-    /// and its rarity `u_i` (fuzzy-matching §5.1/§5.3). `None` if the two stored forms
-    /// are of different kinds and cannot be compared.
-    fn compare(&self, probe: &Stored, template: &Stored) -> Option<(f64, f64)> {
+    /// and the rarity `u_i` of the probe's value for that component
+    /// (fuzzy-matching §5.1/§5.3). `None` if the two stored forms are of
+    /// different kinds and cannot be compared.
+    fn compare(&self, name: &str, probe: &Stored, template: &Stored) -> Option<(f64, f64)> {
         match (probe, template) {
             (Stored::Category(a), Stored::Category(b)) => {
                 let sim = f64::from(u8::from(a == b));
-                Some((sim, self.u_estimate(*a)))
+                Some((sim, self.u_estimate(name, *a)))
             }
             (Stored::Numeric(a), Stored::Numeric(b)) => {
                 let sim = f64::from(u8::from(a == b));
-                Some((sim, self.u_estimate(self.salt.hash(&a.to_string()))))
+                Some((sim, self.u_estimate(name, self.salt.hash(&a.to_string()))))
             }
             (Stored::Set(a), Stored::Set(b)) => {
                 let j = jaccard(a, b);
                 // `J ≥ τ` counts as full agreement; below it, interpolate by J (§5.3).
                 let sim = if j >= TAU { 1.0 } else { j };
-                Some((sim, SET_U))
+                Some((sim, self.u_estimate(name, set_digest(a))))
             }
             _ => None,
         }
     }
 
-    /// Estimate `u_i` for a value hash: its smoothed relative frequency across
-    /// the library (fuzzy-matching §9), clamped to keep the log-ratios finite.
+    /// Estimate `u_i` for `value` of component `name`: its relative frequency
+    /// among that component's sightings (fuzzy-matching §5/§9), shrunk toward
+    /// the component's [`u_prior`] by [`U_PSEUDO`] pseudo-sightings and clamped
+    /// to keep the log-ratios finite.
     ///
-    /// Add-`0.5` (Jeffreys) smoothing keeps a never-before-seen value from
-    /// collapsing `u` to zero on a small library.
+    /// The denominator is the component's own sighting count: a value every
+    /// device shares reads as common (`u → 1`) instead of being diluted by the
+    /// number of components, and the prior keeps a cold or tiny library from
+    /// reading every value as either unique or universal.
     #[allow(clippy::cast_precision_loss)] // frequency ratio; precision loss immaterial
-    fn u_estimate(&self, value: Hash32) -> f64 {
-        let hits = self.frequency.count(value) as f64;
-        let total = self.frequency.total() as f64;
-        ((hits + 0.5) / (total + 1.0)).clamp(U_FLOOR, U_CEIL)
+    fn u_estimate(&self, name: &str, value: Hash32) -> f64 {
+        let hits = self.frequency.count(name, value) as f64;
+        let total = self.frequency.total(name) as f64;
+        ((hits + U_PSEUDO * u_prior(name)) / (total + U_PSEUDO)).clamp(U_FLOOR, U_CEIL)
     }
 
     /// Estimate `m_i` for the component `name`: its observed same-device
@@ -499,6 +506,10 @@ type ProbeMap = std::collections::BTreeMap<String, Stored>;
 /// (`log2(m/u)`), `0.0` a full disagreement (`log2((1-m)/(1-u))`), and a set's
 /// partial Jaccard interpolates between them.
 fn agreement_weight(m: f64, u: f64, sim: f64) -> f64 {
+    // A value more common among different devices than it is stable on one
+    // (`u > m`) is no evidence either way; capping `u` at `m` zeroes both
+    // weights instead of letting a disagreement count as evidence of a match.
+    let u = u.min(m);
     let agree = (m / u).log2();
     let disagree = ((1.0 - m) / (1.0 - u)).log2();
     sim * agree + (1.0 - sim) * disagree
@@ -654,13 +665,14 @@ mod tests {
         let before = store.record(&id).unwrap();
         assert_eq!(before.last_seen, 1_000);
 
-        // A probe agreeing on only the stable K1 subset plus cpu_cores scores
-        // in the review band: enough evidence to suspect `id`, not enough to
-        // confirm and drift it.
+        // A probe agreeing on only the stable K1 subset plus audio and
+        // cpu_cores scores in the review band: enough evidence to suspect `id`,
+        // not enough to confirm and drift it.
         let review_probe = json!({
             "webgl": "ANGLE (Intel)",
             "platform": "Linux x86_64",
             "timezone": "Asia/Shanghai",
+            "audio": "124.04",
             "cpu_cores": 8,
         });
         let review = store.identify(&review_probe, 5_000);

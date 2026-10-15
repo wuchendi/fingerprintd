@@ -608,7 +608,12 @@ browser upgrades. Rules:
 ## 9. Parameter estimation and cold start
 
 - `u_i` — maintain per-component-value frequency counts, updated incrementally in the
-  store.
+  store. Counts are keyed by `(component, value)` with a per-component denominator, and
+  they count **devices, not visits** (a revisit only counts changed values). The
+  estimate shrinks toward a per-component prior (`u_prior`, 10 pseudo-sightings) so a
+  cold or tiny library (the edge scores over the recalled block only) neither reads
+  every value as unique nor as universal, and `u_i` is capped at `m_i` so a value more
+  common across devices than stable on one carries no evidence either way.
 - `m_i` — needs "same-device revisit" labels. Cold start uses **priors** (per the §2
   classification: high-stability = 0.95, medium = 0.80, low = 0.50); after launch,
   **EM iteration** over high-confidence-match revisits converges it. This is an

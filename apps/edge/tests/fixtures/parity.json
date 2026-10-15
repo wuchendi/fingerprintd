@@ -37,6 +37,7 @@
       "webgl": "ANGLE (Intel)",
       "platform": "Linux x86_64",
       "timezone": "Asia/Shanghai",
+      "audio": "124.04",
       "cpu_cores": 8
     }
   },
@@ -80,7 +81,7 @@
             "is_new_device": false,
             "visitor": "A",
             "collision_risk": false,
-            "confidence": 0.85714889776961622
+            "confidence": 0.82598324746695262
           }
         }
       ]
@@ -135,7 +136,7 @@
             "is_new_device": false,
             "visitor": "A",
             "collision_risk": false,
-            "confidence": 0.21689915986753416
+            "confidence": 0.31343546831817864
           }
         }
       ]
