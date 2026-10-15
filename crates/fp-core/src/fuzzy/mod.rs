@@ -52,7 +52,7 @@ use self::{
     agreement::AgreementTable,
     blocking::{BlockingIndex, BlockingKey, DEFAULT_MAX_BLOCK},
     canonical::{all_scalar_key, canonical_scalar, group_key, object_entries, value_to_i64},
-    component::{Salt, Stored},
+    component::{Salt, Stored, set_digest},
     frequency::FrequencyTable,
     minhash::MinHashLsh,
     record::{FingerprintRecord, RecordStore},
@@ -259,13 +259,25 @@ impl FuzzyStore {
     /// Returns `true` when the visitor was newly recorded.
     pub fn observe(&self, visitor: &str, components: &Value, now_ms: u64) -> bool {
         let stored = self.stored_map(components);
-        // Scalar values feed the frequency material for `u_i` (§9).
-        for value in stored.values() {
-            match value {
-                Stored::Category(hash) => self.frequency.record(*hash),
-                Stored::Numeric(n) => self.frequency.record(self.salt.hash(&n.to_string())),
-                Stored::Set(_) => {}
+        // Every stored value feeds its component's frequency material for
+        // `u_i` (§9); a set is counted as a whole via its digest. Frequency
+        // counts DEVICES, not visits: a revisit only counts the components
+        // whose value changed, or a device's own values would read as common
+        // after a few revisits and it would stop matching itself.
+        let previous = self.records.get(visitor);
+        for (name, value) in &stored {
+            if previous
+                .as_ref()
+                .is_some_and(|record| record.components.get(name) == Some(value))
+            {
+                continue;
             }
+            let hash = match value {
+                Stored::Category(hash) => *hash,
+                Stored::Numeric(n) => self.salt.hash(&n.to_string()),
+                Stored::Set(set) => set_digest(set),
+            };
+            self.frequency.record(name, hash);
         }
 
         for key in self.blocking_keys(&stored) {
@@ -485,7 +497,8 @@ mod tests {
 
         // "Linux x86_64" seen twice for the platform component.
         let hash = store.salt.hash("Linux x86_64");
-        assert_eq!(store.frequency().count(hash), 2);
+        assert_eq!(store.frequency().count("platform", hash), 2);
+        assert_eq!(store.frequency().total("platform"), 2);
     }
 
     #[test]

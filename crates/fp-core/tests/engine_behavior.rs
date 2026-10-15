@@ -206,3 +206,72 @@ fn cold_start_is_neutral_and_identify_delegates_to_no_ip() {
     assert_eq!(via_identify.is_new_device, via_no_ip.is_new_device);
     assert!((via_identify.confidence - via_no_ip.confidence).abs() < f64::EPSILON);
 }
+
+/// A realistic SDK-shaped phone payload (real Android Chrome value shapes):
+/// `n` varies every device-distinctive component (GPU, canvas, audio, the
+/// hashed `FingerprintJS` objects, screen), while the low-entropy values every
+/// phone in one city shares stay identical — booleans, colour depth, locale,
+/// timezone, cores, memory, the constant Android font probe, no plugins.
+fn phone(n: u64) -> Value {
+    let h = |tag: &str| format!("{tag}{n:0>31}");
+    json!({
+        "userAgentData": h("u"), "fontPreferences": h("f"), "screenFrame": h("s"),
+        "math": h("m"), "canvas": h("c"), "webgl_extensions": h("x"),
+        "touchSupport": h("t"), "domBlockers": h("d"),
+        "webgl": format!("Google Inc. (Vendor {})|ANGLE (GPU {n})", n % 7),
+        "audio": format!("124.{n}"),
+        "screen": format!("{}x{}", 800 + n % 50, 380 + n % 20),
+        "colorDepth": 24, "sessionStorage": true, "localStorage": true,
+        "indexedDB": true, "openDatabase": false, "vendor": "Google Inc.",
+        "vendorFlavors": "chrome", "cookiesEnabled": true, "colorGamut": "srgb",
+        "forcedColors": false, "monochrome": 0, "contrast": 0,
+        "reducedMotion": false, "reducedTransparency": false, "hdr": false,
+        "pdfViewerEnabled": false, "architecture": 127, "applePay": -1,
+        "audioBaseLatency": 0.003, "dateTimeLocale": "zh-CN",
+        "languages": "zh-CN", "timezone": "Asia/Shanghai",
+        "platform": "Linux armv81", "cpu_cores": 8, "device_memory": 8,
+        "fonts": ["sans-serif-thin"], "plugins": [],
+    })
+}
+
+/// A device that shares only the city-wide common values with the library must
+/// never be merged into an existing visitor, however many look-alikes the
+/// library holds: agreeing on what every phone agrees on is no evidence.
+#[test]
+fn stranger_sharing_only_common_values_is_new_device_at_any_library_size() {
+    for size in [1_u64, 10, 100, 500] {
+        let store = FuzzyStore::new();
+        for n in 0..size {
+            store.observe(&format!("p{n}"), &phone(n), 1_000);
+        }
+        let out = store.identify(&phone(1_000_000), 2_000);
+        assert_eq!(
+            out.decision,
+            Decision::NewDevice,
+            "library of {size}: stranger scored {:?} against {}",
+            out.score,
+            out.visitor_id
+        );
+    }
+}
+
+/// The fix must not cost recall: the same phone revisiting is still matched,
+/// from a library holding only itself up to one crowded with look-alikes.
+#[test]
+fn same_phone_revisit_matches_at_any_library_size() {
+    for size in [0_u64, 10, 100, 500] {
+        let store = FuzzyStore::new();
+        for n in 0..size {
+            store.observe(&format!("p{n}"), &phone(n), 1_000);
+        }
+        let first = store.identify(&phone(1_000_000), 2_000);
+        let again = store.identify(&phone(1_000_000), 3_000);
+        assert_eq!(
+            again.decision,
+            Decision::Match,
+            "library of {size}: {:?}",
+            again.score
+        );
+        assert_eq!(again.visitor_id, first.visitor_id);
+    }
+}
