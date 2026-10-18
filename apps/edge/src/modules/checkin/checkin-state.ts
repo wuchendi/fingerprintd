@@ -7,7 +7,11 @@
  * injects the database-backed `CheckinEventStore`; Node tests inject fakes.
  */
 
-import type { AggregateResult, CheckinEvent } from './checkin-store'
+import type {
+  AggregateResult,
+  CheckinEvent,
+  RecordResult,
+} from './checkin-store'
 
 /**
  * The append + aggregate surface the handler consumes. `CheckinEventStore`
@@ -16,13 +20,15 @@ import type { AggregateResult, CheckinEvent } from './checkin-store'
  * by the cron).
  */
 export interface CheckinStore {
-  /** Append one check-in observation. */
-  record(event: CheckinEvent): Promise<void>
+  /** Append one check-in observation; a second one for the same
+   *  `request_id` records nothing and reports the account it was first
+   *  recorded for. */
+  record(event: CheckinEvent): Promise<RecordResult>
   /** Windowed aggregates for the `(account, device, ip)` triple as of
    *  `now` (Unix ms). */
   getAggregates(
-    accountId: string,
-    visitorId: string,
+    account_id: string,
+    visitor_id: string,
     ip: string,
     now: number,
   ): Promise<AggregateResult>

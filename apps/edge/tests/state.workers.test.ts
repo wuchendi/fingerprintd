@@ -13,6 +13,7 @@ beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM blocking_index'),
     env.DB.prepare('DELETE FROM templates'),
+    env.DB.prepare('DELETE FROM erased_visitors'),
   ])
 })
 
@@ -71,19 +72,18 @@ describe('end-to-end through the Worker (WASM + DO + D1)', () => {
     cpu_cores: 8,
     device_memory: 8,
     fonts: ['Arial', 'Helvetica', 'Courier', 'Times', 'Verdana'],
-    user_agent: 'Chrome/120',
   }
 
   async function identify(components: unknown): Promise<{
     status: number
-    body: { visitorId: string; is_new_device: boolean; decision: string }
+    body: { visitor_id: string; is_new_device: boolean; decision: string }
   }> {
     const challenge = await SELF.fetch('https://edge.test/challenge')
     const { nonce } = (await challenge.json()) as { nonce: string }
     const resp = await SELF.fetch('https://edge.test/identify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce, stable_components: components }),
+      body: JSON.stringify({ nonce, ts: Date.now(), components }),
     })
     return { status: resp.status, body: (await resp.json()) as never }
   }
@@ -94,12 +94,19 @@ describe('end-to-end through the Worker (WASM + DO + D1)', () => {
     expect(first.body.is_new_device).toBe(true)
     expect(first.body.decision).toBe('new_device')
 
+    // Only the salted stored form reached D1, never a raw component value.
+    const row = await env.DB.prepare('SELECT stored FROM templates').first<{
+      stored: string
+    }>()
+    expect(row?.stored).not.toContain('ANGLE (Intel)')
+    expect(row?.stored).not.toContain('Asia/Shanghai')
+
     // The same device returns: recalled from D1, scored a match, same id.
     const second = await identify(probe)
     expect(second.status).toBe(200)
     expect(second.body.is_new_device).toBe(false)
     expect(second.body.decision).toBe('match')
-    expect(second.body.visitorId).toBe(first.body.visitorId)
+    expect(second.body.visitor_id).toBe(first.body.visitor_id)
   })
 
   it('burns the nonce across the real Durable Object', async () => {
@@ -109,7 +116,7 @@ describe('end-to-end through the Worker (WASM + DO + D1)', () => {
       SELF.fetch('https://edge.test/identify', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nonce, stable_components: probe }),
+        body: JSON.stringify({ nonce, ts: Date.now(), components: probe }),
       })
     expect((await send()).status).toBe(200)
     // Replaying the same nonce is rejected: the DO already burned it.

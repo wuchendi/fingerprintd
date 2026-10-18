@@ -1,24 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { Aggregates, ThresholdProfile } from '../src/config/risk-config'
 import { defaultProfiles } from '../src/config/risk-config'
-import type { AssessRequest, Signals } from '../src/lib/types'
+import type { AssessInput } from '../src/modules/checkin/assess-types'
 import { assess } from '../src/modules/checkin/risk-engine'
 
 const profile = defaultProfiles.daily_checkin
 
-/** A request with clean signals; override `signals` per case. */
-function buildReq(signals: Partial<Signals> = {}): AssessRequest {
+/** An input with clean signals; override `signals` per case. */
+function buildReq(signals: Partial<AssessInput['signals']> = {}): AssessInput {
   return {
-    accountId: 'acct-1',
     action: 'daily_checkin',
-    identify: {
-      visitorId: 'vis-1',
-      confidence: 0.9,
-      is_new_device: false,
-      decision: 'match',
-      collision_risk: false,
-      signals: { ua_tls_consistent: true, ip_risk: 'low', ...signals },
-    },
+    visitor_id: 'vis-1',
+    signals: { ua_tls_consistent: true, ip_risk: 'low', ...signals },
   }
 }
 
@@ -45,7 +38,7 @@ describe('assess()', () => {
     expect(res.verdict).toBe('human')
     expect(res.risk).toBeLessThan(0.35)
     expect(res.reasons).toEqual([])
-    expect(res.visitorId).toBe('vis-1')
+    expect(res.visitor_id).toBe('vis-1')
   })
 
   it('UA/TLS mismatch + datacenter IP → both reasons present, banded', () => {
@@ -171,7 +164,7 @@ describe('assess()', () => {
     expect(res.decision).toBe('deny')
   })
 
-  it('defaults the profile from req.action when cfg is omitted', () => {
+  it('defaults the profile from the input action when cfg is omitted', () => {
     const res = assess(buildReq(), buildAgg())
     expect(res.decision).toBe('allow')
   })

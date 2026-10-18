@@ -8,4 +8,9 @@
 export { EdgeEngine, initEngineRuntime } from './engine'
 export type { FingerprintDeps } from './fingerprint.routes'
 export { fingerprintRoutes } from './fingerprint.routes'
-export { DEFAULT_MAX_BLOCK, FingerprintStore } from './fingerprint-store'
+export {
+  FingerprintStore,
+  MAX_CANDIDATES,
+  PER_KEY_CAP,
+  TOMBSTONE_CAP,
+} from './fingerprint-store'

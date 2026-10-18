@@ -3,10 +3,11 @@
  * unit-testable without the Workers runtime.
  *
  * It composes the domain sub-routers — the fingerprint routes
- * (`GET /challenge`, `POST /identify`, `DELETE /visitor/:id`) and the check-in
- * route (`POST /checkin/assess`) — plus the bare `GET /health`, serving the same
- * byte-compatible contracts as the native server (`crates/fingerprintd/src/lib.rs`)
- * so a client works against either. The route handlers themselves live in each
+ * (`GET /challenge`, `POST /identify`, `DELETE /visitor/:id`), the events route
+ * (`GET /events/:request_id`) and the check-in route (`POST /checkin/assess`)
+ * — plus the bare `GET /health`, serving the same
+ * contracts as the native server (`crates/fingerprintd/src/lib.rs`) so a client
+ * works against either. The route handlers themselves live in each
  * module's `*.routes.ts` and are aggregated (behind the per-IP rate limits) by
  * `routes/index.ts`; this file is the composition root that wires CORS and
  * mounts that aggregate over the injected {@link Deps}.
@@ -16,8 +17,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import type { EdgeConfig } from './config'
 import type { NewDeviceVelocityStore } from './lib/do/velocity-do'
-import { SIGNATURE_HEADER, SIGNATURE_TIMESTAMP_HEADER } from './lib/signature'
-import type { CandidateSource, NonceStore } from './lib/state'
+import type { CandidateSource, EventLog, NonceStore } from './lib/state'
 import type { CheckinStore } from './modules/checkin'
 import type { EdgeEngine } from './modules/fingerprint'
 import { routes } from './routes'
@@ -27,6 +27,8 @@ export interface Deps {
   engine: EdgeEngine
   nonces: NonceStore
   candidates: CandidateSource
+  /** Identify events behind `GET /events/:request_id` and check-in. */
+  events: EventLog
   config: EdgeConfig
   checkin: CheckinStore
   /** Cross-session new-device velocity, backed by the `VELOCITY` Durable Object. */
@@ -49,8 +51,8 @@ export function createApp(deps: Deps): Hono {
   const app = new Hono()
 
   // Browser CORS for the playground. Off unless origins are configured
-  // (`FP_CORS_ORIGINS`); when on, expose the signature headers so the browser
-  // client can read them, and let the middleware answer preflight `OPTIONS`.
+  // (`FP_CORS_ORIGINS`); when on, the middleware also answers preflight
+  // `OPTIONS`.
   const { corsOrigins } = deps.config
   if (corsOrigins.length > 0) {
     const allowAny = corsOrigins.includes('*')
@@ -60,7 +62,6 @@ export function createApp(deps: Deps): Hono {
         origin: allowAny ? '*' : corsOrigins,
         allowMethods: ['GET', 'POST', 'OPTIONS'],
         allowHeaders: ['Content-Type'],
-        exposeHeaders: [SIGNATURE_TIMESTAMP_HEADER, SIGNATURE_HEADER],
         maxAge: 86400,
       }),
     )

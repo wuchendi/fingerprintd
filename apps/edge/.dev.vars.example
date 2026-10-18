@@ -2,8 +2,8 @@
 #
 # `.dev.vars` is the local stand-in for Worker Secrets: `wrangler dev` loads it
 # into the same `env.*` bindings `src/config` and `src/db/client.ts` read, so
-# you exercise the secret-gated paths (deterministic salt, nonce probe, response
-# signing) locally without a Cloudflare account. In production these are NOT
+# you exercise the secret-gated paths (deterministic salt, admin erasure, API
+# key) locally without a Cloudflare account. In production these are NOT
 # vars — set each with `wrangler secret put <NAME>` (see README "Deploy"). Never
 # commit real values.
 
@@ -26,14 +26,12 @@ LIBSQL_URL = "http://127.0.0.1:8081"
 #       bunx wrangler dev --local -c wrangler.d1.jsonc
 # DB_TYPE = "d1"
 
-# Pre-shared nonce-probe key. Set to require a correct probe on /identify;
-# leave unset/empty to keep the probe check off. Must equal the key the browser
-# collector was built with (packages/client) for a real probe to verify.
-# FP_PROBE_KEY = "local-dev-probe-key"
+# Admin key gating DELETE /visitor/{id}; unset ⇒ the endpoint returns 404.
+# FP_ADMIN_KEY = "local-dev-admin-key"
 
-# Response-signing key. Set to sign /identify bodies (x-fp-signature +
-# x-fp-timestamp); leave unset/empty to leave responses unsigned.
-# FP_SIGNING_KEY = "local-dev-signing-key"
+# API key gating the server-side events API and POST /checkin/assess; unset ⇒
+# those endpoints are disabled.
+# FP_API_KEY = "local-dev-api-key"
 
 # Allowed browser CORS origins (comma-separated; `*` = any). Set to the web
 # playground's dev origin to call /challenge and /identify cross-origin from it.

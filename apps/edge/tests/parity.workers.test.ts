@@ -1,51 +1,45 @@
 import { env, SELF } from 'cloudflare:test'
 import { beforeEach, describe, expect, it } from 'vitest'
+import parityFixture from '../../../crates/fingerprintd/tests/fixtures/parity.json'
 import type { IdentifyResponse } from '../src/lib/types'
-import parityFixture from './fixtures/parity.json'
 
 // Edge half of the cross-stack parity proof.
 //
-// This drives the SAME `fixtures/parity.json` vectors as the native Rust test
-// (`crates/fingerprintd/tests/parity.rs`) through the full edge stack — the WASM
-// engine, the nonce Durable Object, and the D1 candidate index — in real
-// workerd/miniflare. Both stacks assert the SAME committed `expect` block, so
-// "Worker == native" holds field-by-field: visitorId, decision, is_new_device,
-// collision_risk, and confidence (to the fixture's floating-point tolerance).
+// This drives the native parity vectors (`crates/fingerprintd/tests/fixtures/
+// parity.json`, asserted natively by `crates/fingerprintd/tests/parity.rs`)
+// through the full edge stack — the WASM engine, the nonce Durable Object, and
+// the D1 stored-form index — in real workerd/miniflare. Both stacks assert the
+// SAME `expect` block: decision, is_new_device, collision_risk, template_jump,
+// confidence (to the fixture's tolerance), and the symbolic visitor labels
+// (minted ids are random). No `cf-connecting-ip` is sent, so the new-device
+// velocity stays `low` and moves nothing.
 //
 // The determinism hinges on the salt: `vitest.workers.config.ts` binds
-// `FP_SALT_SECRET` to the fixture's `salt_secret` (asserted below), so the edge
-// derives the same blocking keys and stored hashes the native reference did.
+// `FP_SALT_SECRET` to the fixture's `salt_secret` (asserted below).
 
-/** The parity assertion for one `/identify` step (mirrors the Rust `Expect`). */
 interface Expect {
   decision: IdentifyResponse['decision']
   is_new_device: boolean
-  /** Symbolic visitor label, asserted stable across the steps that share it. */
+  /** Symbolic visitor label: same label ⇒ same id, different ⇒ different. */
   visitor: string
-  /** Absolute derived id, pinned on the step that first mints the visitor. */
-  visitor_id?: string
   collision_risk: boolean
   confidence: number
-}
-
-interface Step {
-  input: string
-  expect: Expect
-}
-
-interface Scenario {
-  name: string
-  steps: Step[]
+  template_jump: boolean
 }
 
 interface ParityFixture {
   salt_secret: string
   confidence_tolerance: number
   components: Record<string, Record<string, unknown>>
-  scenarios: Scenario[]
+  scenarios: Array<{
+    name: string
+    steps: Array<{ input: string; expect: Expect }>
+  }>
 }
 
 const fixture = parityFixture as ParityFixture
+
+const HEX32 = /^[0-9a-f]{32}$/
 
 /** Run one `/identify` against the real Worker: fresh nonce, then score. */
 async function identify(
@@ -56,34 +50,29 @@ async function identify(
   const resp = await SELF.fetch('https://edge.test/identify', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ nonce, stable_components: components }),
+    body: JSON.stringify({ nonce, ts: Date.now(), components }),
   })
   return { status: resp.status, body: (await resp.json()) as IdentifyResponse }
 }
 
-// Storage isolation is per test FILE in pool-workers 0.18 (not per test), so
-// reset the D1 store before each scenario — matching the fresh
-// `FuzzyStore::deterministic` the native test builds per scenario.
+// Storage isolation is per test FILE, so empty the store before each scenario
+// — matching the fresh store the native test builds per scenario.
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM blocking_index'),
     env.DB.prepare('DELETE FROM templates'),
+    env.DB.prepare('DELETE FROM erased_visitors'),
   ])
 })
 
 describe('cross-stack parity (Worker == native)', () => {
-  // Guard the coupling: the deterministic salt the Worker runs with MUST be the
-  // one the native reference used, or the vectors are not comparable.
   it('runs with the salt the fixture was generated under', () => {
     expect(env.FP_SALT_SECRET).toBe(fixture.salt_secret)
   })
 
-  // Each scenario is an independent `it`: `beforeEach` empties the D1 store so
-  // it starts fresh — matching the fresh `FuzzyStore::deterministic` the native
-  // test builds per scenario.
   for (const scenario of fixture.scenarios) {
     it(scenario.name, async () => {
-      const resolved = new Map<string, string>()
+      const labels = new Map<string, string>()
 
       for (const [i, step] of scenario.steps.entries()) {
         const components = fixture.components[step.input]
@@ -101,24 +90,27 @@ describe('cross-stack parity (Worker == native)', () => {
         expect(body.collision_risk, `collision_risk @ step ${i}`).toBe(
           e.collision_risk,
         )
+        expect(body.signals.template_jump, `template_jump @ step ${i}`).toBe(
+          e.template_jump,
+        )
         expect(
           Math.abs(body.confidence - e.confidence),
           `confidence @ step ${i}: got ${body.confidence}, expected ${e.confidence}`,
         ).toBeLessThanOrEqual(fixture.confidence_tolerance)
+        expect(body.visitor_id, `visitor_id @ step ${i}`).toMatch(HEX32)
 
-        // Absolute id pin (present on the step that mints the visitor).
-        if (e.visitor_id !== undefined) {
-          expect(body.visitorId, `visitor_id @ step ${i}`).toBe(e.visitor_id)
-        }
-        // Symbolic-label stability: steps sharing a visitor resolve to one id.
-        const seen = resolved.get(e.visitor)
+        const seen = labels.get(e.visitor)
         if (seen === undefined) {
-          resolved.set(e.visitor, body.visitorId)
-        } else {
+          // A new label must resolve to an id no other label holds.
           expect(
-            body.visitorId,
-            `visitor '${e.visitor}' stable @ step ${i}`,
-          ).toBe(seen)
+            [...labels.values()],
+            `visitor '${e.visitor}' distinct @ step ${i}`,
+          ).not.toContain(body.visitor_id)
+          labels.set(e.visitor, body.visitor_id)
+        } else {
+          expect(body.visitor_id, `visitor '${e.visitor}' @ step ${i}`).toBe(
+            seen,
+          )
         }
       }
     })

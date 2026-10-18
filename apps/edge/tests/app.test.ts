@@ -1,21 +1,27 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { count } from 'drizzle-orm'
+import { beforeAll, describe, expect, it } from 'vitest'
 import type { Deps } from '../src/app'
 import { createApp } from '../src/app'
 import type { Env } from '../src/config'
 import { resolveConfig } from '../src/config'
+import { templates } from '../src/db/schema'
 import type { NewDeviceVelocityStore } from '../src/lib/do/velocity-do'
-import {
-  SIGNATURE_HEADER,
-  SIGNATURE_TIMESTAMP_HEADER,
-} from '../src/lib/signature'
+import type { CandidateSource } from '../src/lib/state'
 import type { ChallengeResponse, IdentifyResponse } from '../src/lib/types'
+import { EventStore } from '../src/modules/events'
 import {
   EdgeEngine,
+  FingerprintStore,
   initEngineRuntime,
-} from '../src/modules/fingerprint/engine'
-import { EmptyCandidateSource, fakeStores } from './helpers/fakes'
+} from '../src/modules/fingerprint'
+import {
+  fakeStores,
+  InMemoryEventLog,
+  InMemoryNonceStore,
+  memoryDb,
+} from './helpers/fakes'
 
 /** Drive the Hono app with injected deps; state lives in `deps`, so a fresh app
  *  per call is fine. */
@@ -27,32 +33,50 @@ beforeAll(() => {
   const wasmPath = fileURLToPath(
     new URL('../wasm/fp_wasm_bg.wasm', import.meta.url).href,
   )
-  const bytes = readFileSync(wasmPath)
-  initEngineRuntime(bytes)
+  initEngineRuntime(readFileSync(wasmPath))
 })
 
 /** Test salt every config in this suite resolves with. */
 const SALT = 'test-salt'
 
+const HEX32 = /^[0-9a-f]{32}$/
+
+/** A JA4 whose structural counts read as a real browser (15 ciphers, 16 ext). */
+const BROWSER_JA4 = 't13d1516h2_8daaf6152771_02713d6af862'
+/** A JA4 whose counts read as a minimal automation stack (3/4). */
+const AUTOMATION_JA4 = 't13d0304h1_aaaaaaaaaaaa_bbbbbbbbbbbb'
+/** A browser UA claiming Chrome. */
+const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0'
+
 /** Build injected deps + fresh fake state for a given environment. */
-function makeDeps(env: Env = {}): Deps {
+function makeDeps(env: Env = {}, overrides: Partial<Deps> = {}): Deps {
   const config = resolveConfig({ FP_SALT_SECRET: SALT, ...env })
   return {
-    engine: new EdgeEngine(config),
+    engine: new EdgeEngine(config.saltSecret),
     config,
     ...fakeStores(config.nonceTtlSecs),
+    ...overrides,
   }
 }
 
 const get = (path: string) =>
   new Request(`https://edge.test${path}`, { method: 'GET' })
 
-const postIdentify = (body: unknown) =>
-  new Request('https://edge.test/identify', {
+/** A POST /identify with a JSON body, extra headers and an optional `cf`
+ *  enrichment object (what the Workers runtime attaches to a request). */
+function postIdentify(
+  body: unknown,
+  headers: Record<string, string> = {},
+  cf?: Record<string, unknown>,
+): Request {
+  const req = new Request('https://edge.test/identify', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   })
+  if (cf) (req as unknown as { cf: unknown }).cf = cf
+  return req
+}
 
 /** GET /challenge and return its parsed body. */
 async function challenge(deps: Deps): Promise<ChallengeResponse> {
@@ -61,7 +85,7 @@ async function challenge(deps: Deps): Promise<ChallengeResponse> {
   return (await resp.json()) as ChallengeResponse
 }
 
-/** A rich, realistic stable-component probe the fuzzy engine can score. */
+/** A rich, realistic component probe in the closed schema. */
 function probeComponents(): Record<string, unknown> {
   return {
     webgl: 'ANGLE (Intel)',
@@ -71,8 +95,31 @@ function probeComponents(): Record<string, unknown> {
     cpu_cores: 8,
     device_memory: 8,
     fonts: ['Arial', 'Helvetica', 'Courier', 'Times', 'Verdana'],
-    user_agent: 'Chrome/120',
   }
+}
+
+/** A valid identify body over a fresh nonce, with `extra` merged in. */
+async function body(
+  deps: Deps,
+  extra: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  const { nonce } = await challenge(deps)
+  return { nonce, ts: Date.now(), components: probeComponents(), ...extra }
+}
+
+/** challenge → identify, asserting 200, returning the parsed body. */
+async function identify(
+  deps: Deps,
+  extra: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+  cf?: Record<string, unknown>,
+): Promise<IdentifyResponse> {
+  const resp = await handleRequest(
+    postIdentify(await body(deps, extra), headers, cf),
+    deps,
+  )
+  expect(resp.status).toBe(200)
+  return (await resp.json()) as IdentifyResponse
 }
 
 describe('routing', () => {
@@ -88,603 +135,562 @@ describe('routing', () => {
 })
 
 describe('GET /challenge', () => {
-  it('mints a nonce with the collection plan (probe transform omitted by default)', async () => {
-    const body = await challenge(makeDeps())
-    expect(typeof body.nonce).toBe('string')
-    expect(body.expires_in).toBe(30)
-    expect(body.collect.challenge.seed).toBe(body.nonce)
-    expect(body.collect.stable).toContain('userAgent')
-    expect(body.collect.challenge.targets).toEqual(['canvas', 'audio'])
-    // No probe key ⇒ transform not advertised.
-    expect(body.collect.challenge.verify).toBeUndefined()
-  })
-
-  it('advertises the probe transform when a probe key is configured', async () => {
-    const body = await challenge(
-      makeDeps({ FP_PROBE_KEY: 'test-probe-secret' }),
-    )
-    expect(body.collect.challenge.verify).toEqual({
-      alg: 'HMAC-SHA256',
-      input: 'nonce',
-      encoding: 'hex',
-    })
+  it('returns exactly nonce and expires_in', async () => {
+    const resp = await handleRequest(get('/challenge'), makeDeps())
+    expect(resp.headers.get('content-type')).toBe('application/json')
+    const json = (await resp.json()) as Record<string, unknown>
+    expect(Object.keys(json).sort()).toEqual(['expires_in', 'nonce'])
+    expect(typeof json.nonce).toBe('string')
+    expect(json.expires_in).toBe(30)
   })
 })
 
-describe('POST /identify', () => {
-  it('identifies a first-ever probe as a new device', async () => {
+describe('POST /identify contract', () => {
+  it('identifies a first-ever probe as a new device with exactly the contract keys', async () => {
     const deps = makeDeps()
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      postIdentify({ nonce, stable_components: probeComponents() }),
-      deps,
-    )
+    const resp = await handleRequest(postIdentify(await body(deps)), deps)
     expect(resp.status).toBe(200)
-    const body = (await resp.json()) as IdentifyResponse
-    expect(typeof body.visitorId).toBe('string')
-    expect(body.is_new_device).toBe(true)
-    expect(body.decision).toBe('new_device')
-    expect(body.confidence).toBeGreaterThanOrEqual(0)
-    expect(body.confidence).toBeLessThanOrEqual(1)
-    // Neutral degraded signals when no Bot Management headers are present; the
-    // no-op velocity store keeps the velocity bands at the neutral `low`.
-    expect(body.signals).toEqual({
+    expect(resp.headers.get('content-type')).toBe('application/json')
+    expect(
+      [...resp.headers.keys()].filter((name) => name.startsWith('x-fp-')),
+    ).toEqual([])
+    const json = (await resp.json()) as IdentifyResponse
+    expect(Object.keys(json).sort()).toEqual([
+      'collision_risk',
+      'confidence',
+      'decision',
+      'is_new_device',
+      'request_id',
+      'signals',
+      'visitor_id',
+    ])
+    expect(json.request_id).toMatch(HEX32)
+    expect(json.visitor_id).toMatch(HEX32)
+    expect(json.decision).toBe('new_device')
+    expect(json.is_new_device).toBe(true)
+    expect(json.confidence).toBeGreaterThanOrEqual(0)
+    expect(json.confidence).toBeLessThanOrEqual(1)
+    expect(json.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
       client_integrity: 'unavailable',
       persona_coherence: 'unknown',
       new_device_velocity: 'low',
-      new_device_velocity_ja4: 'low',
+      automation: 'unknown',
+      template_jump: false,
     })
   })
 
-  it('rejects an unknown top-level field with 400 (strict schema)', async () => {
+  it('mints a unique request_id per call', async () => {
     const deps = makeDeps()
-    const { nonce } = await challenge(deps)
-    // A stray `challenge_response` (or any extra top-level key) is no longer
-    // tolerated: the strict schema fails zValidator, yielding a 400 before the
-    // handler runs — the nonce is NOT consumed.
+    const first = await identify(deps)
+    const second = await identify(deps)
+    expect(first.request_id).not.toBe(second.request_id)
+  })
+
+  it('re-identifies a returning device through the real store', async () => {
+    const deps = makeDeps(
+      {},
+      { candidates: new FingerprintStore(await memoryDb()) },
+    )
+    const first = await identify(deps)
+    const second = await identify(deps)
+    expect(second.decision).toBe('match')
+    expect(second.is_new_device).toBe(false)
+    expect(second.visitor_id).toBe(first.visitor_id)
+    expect(second.request_id).not.toBe(first.request_id)
+  })
+})
+
+describe('POST /identify request validation', () => {
+  /** POST `raw` (already-serialized) with a content type; return the status. */
+  async function postRaw(
+    deps: Deps,
+    raw: string,
+    contentType: string | undefined,
+  ): Promise<number> {
+    const headers: Record<string, string> = {}
+    if (contentType !== undefined) headers['content-type'] = contentType
     const resp = await handleRequest(
-      postIdentify({
-        nonce,
-        stable_components: { ua: 'x' },
-        challenge_response: { canvas: 'abc' },
+      new Request('https://edge.test/identify', {
+        method: 'POST',
+        headers,
+        body: raw,
       }),
       deps,
     )
-    expect(resp.status).toBe(400)
+    return resp.status
+  }
+
+  it('rejects a non-JSON or missing content type with 415', async () => {
+    const deps = makeDeps()
+    const valid = JSON.stringify(await body(deps))
+    expect(await postRaw(deps, valid, 'text/plain')).toBe(415)
+    expect(await postRaw(deps, valid, undefined)).toBe(415)
   })
 
+  it('accepts a JSON content type with parameters', async () => {
+    const deps = makeDeps()
+    const valid = JSON.stringify(await body(deps))
+    expect(await postRaw(deps, valid, 'application/json; charset=utf-8')).toBe(
+      200,
+    )
+  })
+
+  it('rejects malformed JSON with 400', async () => {
+    expect(await postRaw(makeDeps(), '{"nonce":', 'application/json')).toBe(400)
+  })
+
+  const invalid: Array<[string, Record<string, unknown>]> = [
+    ['an unknown top-level key', { signature: 'x' }],
+    ['a missing ts', { ts: undefined }],
+    ['a non-integer ts', { ts: 1.5 }],
+    ['an unknown component key', { components: { userAgent: 'Chrome' } }],
+    ['a wrongly-typed component', { components: { cpu_cores: 'eight' } }],
+    ['a non-object components', { components: ['webgl'] }],
+    ['an unknown botd key', { botd: { bot: true, signals: {} } }],
+    ['a wrongly-typed botd', { botd: { bot: 'yes' } }],
+    ['an unknown integrity key', { integrity: { other: 'noise' } }],
+    ['a bad integrity verdict', { integrity: { canvas: 'broken' } }],
+    ['a non-string user_agent', { user_agent: 42 }],
+  ]
+  for (const [name, extra] of invalid) {
+    it(`rejects ${name} with 400 without burning the nonce`, async () => {
+      const deps = makeDeps()
+      const good = await body(deps)
+      const bad = { ...good, ...extra }
+      const rejected = await handleRequest(postIdentify(bad), deps)
+      expect(rejected.status).toBe(400)
+      // The nonce survived the 400: the corrected body is accepted.
+      const accepted = await handleRequest(postIdentify(good), deps)
+      expect(accepted.status).toBe(200)
+    })
+  }
+})
+
+describe('POST /identify anti-replay', () => {
   it('rejects an unknown nonce with 401', async () => {
+    const deps = makeDeps()
     const resp = await handleRequest(
-      postIdentify({ nonce: 'never-issued', stable_components: { ua: 'x' } }),
-      makeDeps(),
+      postIdentify({ ...(await body(deps)), nonce: 'never-issued' }),
+      deps,
     )
     expect(resp.status).toBe(401)
   })
 
-  it('rejects a replayed nonce with 401', async () => {
+  it('rejects a reused nonce with 401', async () => {
     const deps = makeDeps()
-    const { nonce } = await challenge(deps)
-    const body = { nonce, stable_components: { ua: 'x' } }
-    expect((await handleRequest(postIdentify(body), deps)).status).toBe(200)
-    // Same nonce again: the one-time nonce is burned.
-    expect((await handleRequest(postIdentify(body), deps)).status).toBe(401)
-  })
-})
-
-describe('nonce-probe enforcement', () => {
-  const env: Env = { FP_PROBE_KEY: 'test-probe-secret' }
-
-  it('accepts a correct probe and rejects a missing/forged one', async () => {
-    const deps = makeDeps(env)
-
-    // Missing probe when enforced ⇒ 401.
-    const { nonce: n1 } = await challenge(deps)
-    expect(
-      (
-        await handleRequest(
-          postIdentify({ nonce: n1, stable_components: { ua: 'x' } }),
-          deps,
-        )
-      ).status,
-    ).toBe(401)
-
-    // Correct probe ⇒ 200.
-    const { nonce: n2 } = await challenge(deps)
-    const probe = deps.engine.expectedProbe(n2)
-    expect(
-      (
-        await handleRequest(
-          postIdentify({ nonce: n2, probe, stable_components: { ua: 'x' } }),
-          deps,
-        )
-      ).status,
-    ).toBe(200)
-
-    // Forged probe ⇒ 401.
-    const { nonce: n3 } = await challenge(deps)
-    expect(
-      (
-        await handleRequest(
-          postIdentify({
-            nonce: n3,
-            probe: 'deadbeef',
-            stable_components: { ua: 'x' },
-          }),
-          deps,
-        )
-      ).status,
-    ).toBe(401)
+    const once = await body(deps)
+    expect((await handleRequest(postIdentify(once), deps)).status).toBe(200)
+    expect((await handleRequest(postIdentify(once), deps)).status).toBe(401)
   })
 
-  it('reproduces the shared probe parity vector', () => {
-    // Ties the edge probe check to the browser collector's vendored artifact
-    // (packages/client) and the native server — same key, same nonce, same hex.
-    const engine = new EdgeEngine(
-      resolveConfig({
-        FP_SALT_SECRET: SALT,
-        FP_PROBE_KEY: 'test-probe-secret',
-      }),
-    )
-    expect(engine.expectedProbe('fixed-nonce-000')).toBe(
-      'ad83144894f917b94072c2f7b3246af66d3bc5a450562ccf3671ed64d33137d0',
-    )
+  it('rejects an expired nonce with 401', async () => {
+    const deps = makeDeps({}, { nonces: new InMemoryNonceStore(-1) })
+    const resp = await handleRequest(postIdentify(await body(deps)), deps)
+    expect(resp.status).toBe(401)
   })
-})
 
-describe('response signing', () => {
-  it('omits signature headers when no signing key is configured', async () => {
+  it('accepts a fresh ts and rejects a stale or future one with 401', async () => {
     const deps = makeDeps()
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      postIdentify({ nonce, stable_components: { ua: 'x' } }),
-      deps,
-    )
-    expect(resp.headers.get(SIGNATURE_HEADER)).toBeNull()
-    expect(resp.headers.get(SIGNATURE_TIMESTAMP_HEADER)).toBeNull()
-  })
-
-  it('signs the exact response bytes when a signing key is configured', async () => {
-    const deps = makeDeps({ FP_SIGNING_KEY: 'test-signing-secret' })
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      postIdentify({ nonce, stable_components: { ua: 'x' } }),
-      deps,
-    )
-    expect(resp.status).toBe(200)
-
-    const issuedMs = Number(resp.headers.get(SIGNATURE_TIMESTAMP_HEADER))
-    const signature = resp.headers.get(SIGNATURE_HEADER)
-    expect(signature).toMatch(/^[0-9a-f]{64}$/)
-
-    // The advertised signature recomputes over the received timestamp + body.
-    const bodyBytes = new Uint8Array(await resp.arrayBuffer())
-    expect(deps.engine.sign(issuedMs, bodyBytes)).toBe(signature)
-
-    // Tampering the body breaks the signature.
-    const tampered = new Uint8Array([...bodyBytes, 0x20])
-    expect(deps.engine.sign(issuedMs, tampered)).not.toBe(signature)
-  })
-
-  it('reproduces the shared signing vector', () => {
-    // Ties the edge signer to the native `fingerprintd::signing::ResponseSigner`
-    // (crates/fp-wasm `engine_sign_matches_shared_vector`): same signing key,
-    // same timestamp + body, same hex — the response-signing analogue of the
-    // probe parity vector, proving the signing Worker Secret path is identical.
-    const engine = new EdgeEngine(
-      resolveConfig({
-        FP_SALT_SECRET: SALT,
-        FP_SIGNING_KEY: 'test-signing-secret',
-      }),
-    )
-    const body = new TextEncoder().encode('{"visitorId":"abc"}')
-    expect(engine.sign(1_700_000_000_000, body)).toBe(
-      '11e764ff987d7be6e4f9e272c9c9fbb9c29fc8c5e3dcc5b935dfa11b9c751792',
-    )
-  })
-})
-
-describe('timestamp window', () => {
-  const env: Env = { FP_ENFORCE_TS_WINDOW: '1', FP_TS_SKEW_SECS: '30' }
-
-  it('accepts a fresh ts and rejects stale/future/missing', async () => {
-    const deps = makeDeps(env)
     const now = Date.now()
-    const send = async (extra: Record<string, unknown>) => {
-      const { nonce } = await challenge(deps)
-      return handleRequest(
-        postIdentify({ nonce, stable_components: { ua: 'x' }, ...extra }),
-        deps,
-      )
-    }
-    expect((await send({ ts: now })).status).toBe(200)
-    expect((await send({ ts: now - 60_000 })).status).toBe(401)
-    expect((await send({ ts: now + 60_000 })).status).toBe(401)
-    expect((await send({})).status).toBe(401)
+    const status = async (ts: number) =>
+      (await handleRequest(postIdentify(await body(deps, { ts })), deps)).status
+    expect(await status(now)).toBe(200)
+    expect(await status(now - 60_000)).toBe(401)
+    expect(await status(now + 60_000)).toBe(401)
   })
-})
 
-describe('passive signals (edge JA4/IP fusion)', () => {
-  // Shared JA4/UA vectors, identical to the native `signals` tests
-  // (crates/fingerprintd/src/signals.rs) so the edge verdict is provably the same.
-  /** A JA4 whose structural counts read as a real browser (15 ciphers, 16 ext). */
-  const BROWSER_JA4 = 't13d1516h2_8daaf6152771_02713d6af862'
-  /** A JA4 whose counts read as a minimal automation stack (3/4). */
-  const AUTOMATION_JA4 = 't13d0304h1_aaaaaaaaaaaa_bbbbbbbbbbbb'
-
-  const postIdentifyWith = (body: unknown, headers: Record<string, string>) =>
-    new Request('https://edge.test/identify', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-    })
-
-  /** Run a full challenge→identify and return the parsed body. `probeComponents`
-   *  reports a Chrome UA (`user_agent`), so a browser JA4 is consistent and an
-   *  automation JA4 is the forgery. The candidate source is empty ⇒ the base
-   *  score is identical across calls, so confidences are comparable. */
-  async function identifyWith(
-    deps: Deps,
-    headers: Record<string, string>,
-  ): Promise<IdentifyResponse> {
-    const { nonce } = await challenge(deps)
+  it('honours a configured skew', async () => {
+    const deps = makeDeps({ FP_TS_SKEW_SECS: '120' })
     const resp = await handleRequest(
-      postIdentifyWith(
-        { nonce, stable_components: probeComponents() },
-        headers,
-      ),
+      postIdentify(await body(deps, { ts: Date.now() - 60_000 })),
       deps,
     )
     expect(resp.status).toBe(200)
-    return (await resp.json()) as IdentifyResponse
-  }
+  })
+})
 
-  const trustedDeps = () => makeDeps({ FP_TRUST_EDGE_HEADERS: '1' })
-
-  it('trusted browser JA4 over a Chrome UA is consistent and boosts confidence', async () => {
-    const deps = trustedDeps()
-    // Degraded baseline: trusted edge, but no Bot Management header present.
-    const degraded = await identifyWith(deps, {})
-    expect(degraded.signals).toEqual({
-      ua_tls_consistent: true,
-      ip_risk: 'low',
-      client_integrity: 'unavailable',
-      persona_coherence: 'unknown',
-      new_device_velocity: 'low',
-      new_device_velocity_ja4: 'low',
+describe('signals', () => {
+  it('surfaces the botd verdict as automation', async () => {
+    const deps = makeDeps()
+    const detected = await identify(deps, {
+      botd: { bot: true, kind: 'headless_chrome' },
     })
+    const human = await identify(deps, { botd: { bot: false } })
+    const nullKind = await identify(deps, { botd: { bot: false, kind: null } })
+    expect(detected.signals.automation).toBe('detected')
+    expect(human.signals.automation).toBe('not_detected')
+    expect(nullKind.signals.automation).toBe('not_detected')
+    expect(detected.confidence).toBe(human.confidence)
+  })
 
-    const consistent = await identifyWith(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-    })
+  it('cross-checks the top-level user_agent against the cf JA4', async () => {
+    const deps = makeDeps()
+    const cf = (ja4: string) => ({ botManagement: { ja4 } })
+    const neutral = await identify(deps, { user_agent: CHROME_UA })
+    const consistent = await identify(
+      deps,
+      { user_agent: CHROME_UA },
+      {},
+      cf(BROWSER_JA4),
+    )
+    const forged = await identify(
+      deps,
+      { user_agent: CHROME_UA },
+      {},
+      cf(AUTOMATION_JA4),
+    )
+    expect(neutral.signals.ua_tls_consistent).toBe(true)
     expect(consistent.signals.ua_tls_consistent).toBe(true)
-    // The consistency boost (fuzzy-matching §6) lifts confidence above the degraded base.
-    expect(consistent.confidence).toBeGreaterThan(degraded.confidence)
+    expect(consistent.confidence).toBeGreaterThan(neutral.confidence)
+    expect(forged.signals.ua_tls_consistent).toBe(false)
+    expect(forged.confidence).toBeLessThan(neutral.confidence)
   })
 
-  it('trusted automation JA4 under a Chrome UA is a forgery: inconsistent + downgraded', async () => {
-    const deps = trustedDeps()
-    const degraded = await identifyWith(deps, {})
-    const forgery = await identifyWith(deps, {
-      'cf-bot-management-ja4': AUTOMATION_JA4,
-    })
-    // The anti-forgery core (architecture §4.2): Chrome UA riding an automation TLS stack.
-    expect(forgery.signals.ua_tls_consistent).toBe(false)
-    expect(forgery.confidence).toBeLessThan(degraded.confidence)
+  it('ignores a client-supplied cf-bot-management-ja4 header', async () => {
+    const deps = makeDeps()
+    const neutral = await identify(deps, { user_agent: CHROME_UA })
+    const header = await identify(
+      deps,
+      { user_agent: CHROME_UA },
+      { 'cf-bot-management-ja4': AUTOMATION_JA4 },
+    )
+    expect(header.signals.ua_tls_consistent).toBe(true)
+    expect(header.confidence).toBe(neutral.confidence)
   })
 
-  it('cf-connecting-ip drives the ip_risk band (datacenter high / residential low)', async () => {
-    const deps = trustedDeps()
-    const datacenter = await identifyWith(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '34.120.5.6',
-    })
-    expect(datacenter.signals.ip_risk).toBe('high')
+  it('reads the claimed UA only from the top-level user_agent', async () => {
+    const deps = makeDeps()
+    // Without a claimed UA the TLS cross-check has nothing to contradict.
+    const noUa = await identify(
+      deps,
+      {},
+      {},
+      {
+        botManagement: { ja4: AUTOMATION_JA4 },
+      },
+    )
+    expect(noUa.signals.ua_tls_consistent).toBe(true)
+  })
 
-    const residential = await identifyWith(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '198.51.100.7',
-    })
+  it('bands the cf-connecting-ip and raises it for a hosting ASN', async () => {
+    const deps = makeDeps()
+    const residential = await identify(
+      deps,
+      {},
+      {
+        'cf-connecting-ip': '203.0.113.9',
+      },
+    )
     expect(residential.signals.ip_risk).toBe('low')
-
-    // No IP header at all ⇒ low (no adverse evidence).
-    const absent = await identifyWith(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-    })
-    expect(absent.signals.ip_risk).toBe('low')
+    const hosting = await identify(
+      deps,
+      {},
+      { 'cf-connecting-ip': '203.0.113.9' },
+      { asn: 16509, asOrganization: 'Amazon.com, Inc.' },
+    )
+    expect(hosting.signals.ip_risk).toBe('high')
   })
 
-  it('trusted edge with JA4 absent auto-degrades: consistent, low, no penalty', async () => {
-    const deps = trustedDeps()
-    const baseline = await identifyWith(deps, {})
-    // IP present but Bot Management absent ⇒ degraded (neutral), IP still classified.
-    const degraded = await identifyWith(deps, {
-      'cf-connecting-ip': '198.51.100.7',
-    })
-    expect(degraded.signals.ua_tls_consistent).toBe(true)
-    expect(degraded.signals.ip_risk).toBe('low')
-    // A missing connection signal never penalises (§4.2 auto-degrade).
-    expect(degraded.confidence).toBeCloseTo(baseline.confidence, 12)
-  })
-
-  it('untrusted edge ignores a forged client-supplied JA4/IP copy', async () => {
-    // trustEdgeHeaders defaults OFF: a request-supplied automation JA4 +
-    // datacenter IP must NOT be trusted — the untrusted path auto-degrades.
+  it('flags a borrowed persona from user_agent vs fonts, surfaced-only', async () => {
     const deps = makeDeps()
-    const baseline = await identifyWith(deps, {})
-    const forged = await identifyWith(deps, {
-      'cf-bot-management-ja4': AUTOMATION_JA4,
-      'cf-connecting-ip': '34.120.5.6',
+    const windowsUa =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36'
+    const withFonts = (fonts: string[]) => ({
+      user_agent: windowsUa,
+      components: { platform: 'Win32', fonts },
     })
-    expect(forged.signals).toEqual({
-      ua_tls_consistent: true,
-      ip_risk: 'low',
-      client_integrity: 'unavailable',
-      persona_coherence: 'unknown',
-      new_device_velocity: 'low',
-      new_device_velocity_ja4: 'low',
-    })
-    // The forged copy neither downgrades confidence nor raises the IP band.
-    expect(forged.confidence).toBeCloseTo(baseline.confidence, 12)
-  })
-})
-
-describe('ASN IP-risk band (edge cf enrichment)', () => {
-  const BROWSER_JA4 = 't13d1516h2_8daaf6152771_02713d6af862'
-
-  /** Build an /identify request with an optional Cloudflare `cf` enrichment
-   *  object attached (the field the Worker runtime injects; absent in the base
-   *  Request), so `cfAsn` has an ASN to read on the trusted path. */
-  const postIdentifyCf = (
-    body: unknown,
-    headers: Record<string, string>,
-    cf?: Record<string, unknown>,
-  ) => {
-    const req = new Request('https://edge.test/identify', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-    })
-    if (cf) (req as unknown as { cf: unknown }).cf = cf
-    return req
-  }
-
-  async function identifyCf(
-    deps: Deps,
-    headers: Record<string, string>,
-    cf?: Record<string, unknown>,
-  ): Promise<IdentifyResponse> {
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      postIdentifyCf(
-        { nonce, stable_components: probeComponents() },
-        headers,
-        cf,
-      ),
-      deps,
-    )
-    expect(resp.status).toBe(200)
-    return (await resp.json()) as IdentifyResponse
-  }
-
-  const trustedDeps = () => makeDeps({ FP_TRUST_EDGE_HEADERS: '1' })
-
-  it('raises ip_risk to high for a hosting ASN whose IP is outside the CIDR table', async () => {
-    const deps = trustedDeps()
-    // Residential-looking IP (WASM band `low`, outside fp-core's CIDR table) but
-    // a curated hosting ASN (AWS 16509) → the ASN reputation raises the surfaced
-    // band to `high` (max(wasmBand, asnBand)).
-    const body = await identifyCf(
-      deps,
-      {
-        'cf-bot-management-ja4': BROWSER_JA4,
-        'cf-connecting-ip': '198.51.100.7',
-      },
-      { asn: 16509, asOrganization: 'AMAZON-02' },
-    )
-    expect(body.signals.ip_risk).toBe('high')
+    const mismatch = await identify(deps, withFonts(['Arial', 'Courier New']))
+    const consistent = await identify(deps, withFonts(['Calibri']))
+    expect(mismatch.signals.persona_coherence).toBe('mismatch')
+    expect(consistent.signals.persona_coherence).toBe('consistent')
+    const noUa = await identify(deps, { components: { fonts: ['Arial'] } })
+    expect(noUa.signals.persona_coherence).toBe('unknown')
   })
 
-  it('keeps the WASM band for a residential ASN', async () => {
-    const deps = trustedDeps()
-    // A non-hosting residential ASN (Comcast 7922) never bumps the band — the
-    // ASN can only raise, so the WASM `low` is preserved.
-    const body = await identifyCf(
-      deps,
-      {
-        'cf-bot-management-ja4': BROWSER_JA4,
-        'cf-connecting-ip': '198.51.100.7',
-      },
-      { asn: 7922, asOrganization: 'COMCAST-7922' },
-    )
-    expect(body.signals.ip_risk).toBe('low')
-  })
+  describe('client integrity', () => {
+    const allNoise = {
+      canvas: 'noise',
+      webgl: 'noise',
+      audio: 'noise',
+      rect: 'noise',
+    }
 
-  it('never reads cf on an untrusted edge (hosting ASN ignored)', async () => {
-    // trustEdgeHeaders defaults OFF: even a hosting cf.asn + datacenter IP must
-    // be ignored — the untrusted path returns the neutral degraded verdict and
-    // never touches `cf`.
-    const deps = makeDeps()
-    const body = await identifyCf(
-      deps,
-      {
-        'cf-bot-management-ja4': BROWSER_JA4,
-        'cf-connecting-ip': '34.120.5.6',
-      },
-      { asn: 16509, asOrganization: 'AMAZON-02' },
-    )
-    expect(body.signals).toEqual({
-      ua_tls_consistent: true,
-      ip_risk: 'low',
-      client_integrity: 'unavailable',
-      persona_coherence: 'unknown',
-      new_device_velocity: 'low',
-      new_device_velocity_ja4: 'low',
+    it('surfaces noise without moving confidence by default', async () => {
+      const deps = makeDeps()
+      const base = await identify(deps)
+      const noisy = await identify(deps, { integrity: allNoise })
+      expect(base.signals.client_integrity).toBe('unavailable')
+      expect(noisy.signals.client_integrity).toBe('noise')
+      expect(noisy.confidence).toBe(base.confidence)
+    })
+
+    it('lowers confidence on noise only when the penalty is enabled', async () => {
+      const deps = makeDeps({ FP_INTEGRITY_PENALTY_ENABLED: '1' })
+      const base = await identify(deps)
+      const noisy = await identify(deps, { integrity: allNoise })
+      const clean = await identify(deps, { integrity: { canvas: 'ok' } })
+      expect(noisy.confidence).toBeLessThan(base.confidence)
+      expect(clean.signals.client_integrity).toBe('ok')
+      expect(clean.confidence).toBe(base.confidence)
     })
   })
 })
 
-describe('new-device velocity (edge DO band)', () => {
-  const BROWSER_JA4 = 't13d1516h2_8daaf6152771_02713d6af862'
-
-  /** A fake {@link NewDeviceVelocityStore} returning fixed counts and recording
-   *  the keys/args it was called with, so a test can assert the derived band and
-   *  the JA4-class key derivation without a live Durable Object. */
-  class FakeVelocity implements NewDeviceVelocityStore {
-    ipCalls: Array<[string, string, number]> = []
-    ja4Calls: Array<[string, string, number]> = []
-    constructor(
-      private readonly ipCount: number,
-      private readonly ja4Count: number,
-    ) {}
-    newDeviceVelocityIp(ip: string, v: string, w: number): Promise<number> {
-      this.ipCalls.push([ip, v, w])
-      return Promise.resolve(this.ipCount)
-    }
-    newDeviceVelocityJa4(cls: string, v: string, w: number): Promise<number> {
-      this.ja4Calls.push([cls, v, w])
-      return Promise.resolve(this.ja4Count)
+describe('new-device velocity', () => {
+  /** Distinct visitor ids per IP, like the Durable Object (no expiry here). */
+  class CountingVelocity implements NewDeviceVelocityStore {
+    readonly calls: Array<[string, string, number]> = []
+    private readonly seen = new Map<string, Set<string>>()
+    newDeviceVelocityIp(
+      ip: string,
+      visitor_id: string,
+      windowMs: number,
+    ): Promise<number> {
+      this.calls.push([ip, visitor_id, windowMs])
+      const ids = this.seen.get(ip) ?? new Set<string>()
+      ids.add(visitor_id)
+      this.seen.set(ip, ids)
+      return Promise.resolve(ids.size)
     }
   }
 
-  /** A store that always throws, to exercise the fail-open path. */
-  class ThrowingVelocity implements NewDeviceVelocityStore {
-    newDeviceVelocityIp(): Promise<number> {
-      return Promise.reject(new Error('DO unavailable'))
-    }
-    newDeviceVelocityJa4(): Promise<number> {
-      return Promise.reject(new Error('DO unavailable'))
-    }
-  }
+  it('bands distinct new devices per IP and lowers confidence at high', async () => {
+    const velocity = new CountingVelocity()
+    const deps = makeDeps({}, { velocity })
+    const ip = { 'cf-connecting-ip': '198.51.100.7' }
+    const results: IdentifyResponse[] = []
+    for (let i = 0; i < 20; i++) results.push(await identify(deps, {}, ip))
 
-  const trustedDepsWith = (velocity: NewDeviceVelocityStore): Deps => ({
-    ...makeDeps({ FP_TRUST_EDGE_HEADERS: '1' }),
-    velocity,
-  })
-
-  /** Full challenge→identify (empty candidate source ⇒ always a new device). */
-  async function identify(
-    deps: Deps,
-    headers: Record<string, string>,
-  ): Promise<IdentifyResponse> {
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      new Request('https://edge.test/identify', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
-        body: JSON.stringify({
-          nonce,
-          stable_components: probeComponents(),
-        }),
-      }),
-      deps,
+    const [first] = results
+    const fifth = results[4]
+    const twentieth = results[19]
+    expect(first?.signals.new_device_velocity).toBe('low')
+    expect(fifth?.signals.new_device_velocity).toBe('medium')
+    expect(twentieth?.signals.new_device_velocity).toBe('high')
+    // The high-band penalty comes from the engine; medium carries none.
+    const penalty = deps.engine.velocityPenalty('high')
+    expect(penalty).toBeGreaterThan(0)
+    expect(fifth?.confidence).toBe(first?.confidence)
+    expect(twentieth?.confidence).toBeCloseTo(
+      (first?.confidence ?? 0) - penalty,
+      12,
     )
-    expect(resp.status).toBe(200)
-    return (await resp.json()) as IdentifyResponse
-  }
-
-  it('bands a new device from the DO-backed counts on a NewDevice verdict', async () => {
-    // HIGH per-IP count (20) and MEDIUM per-JA4-class count (100).
-    const velocity = new FakeVelocity(20, 100)
-    const deps = trustedDepsWith(velocity)
-    const body = await identify(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '198.51.100.7',
-    })
-    expect(body.is_new_device).toBe(true)
-    expect(body.signals.new_device_velocity).toBe('high')
-    expect(body.signals.new_device_velocity_ja4).toBe('medium')
-    // Keyed on the edge-observed IP and the coarse JA4 shape class (the
-    // `(protocol, tls_version, sni, alpn)` shape, mirroring `ja4_class`), over
-    // the 3600s window, member = the minted visitorId.
-    expect(velocity.ipCalls[0]).toEqual([
+    // Keyed on the IP, member = the minted visitor id, over the 3600 s window.
+    expect(velocity.calls[0]).toEqual([
       '198.51.100.7',
-      body.visitorId,
-      3600 * 1000,
-    ])
-    expect(velocity.ja4Calls[0]).toEqual([
-      't13dh2',
-      body.visitorId,
-      3600 * 1000,
+      first?.visitor_id,
+      3_600_000,
     ])
   })
 
-  it('fails open to low when the DO throws', async () => {
-    const body = await identify(trustedDepsWith(new ThrowingVelocity()), {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '198.51.100.7',
-    })
-    // A DO error must never block or error the request — it degrades to neutral.
-    expect(body.signals.new_device_velocity).toBe('low')
-    expect(body.signals.new_device_velocity_ja4).toBe('low')
+  it('stays low without a client IP or off a new device', async () => {
+    const velocity = new CountingVelocity()
+    const deps = makeDeps(
+      {},
+      { velocity, candidates: new FingerprintStore(await memoryDb()) },
+    )
+    const noIp = await identify(deps)
+    expect(noIp.signals.new_device_velocity).toBe('low')
+    expect(velocity.calls).toHaveLength(0)
+
+    const ip = { 'cf-connecting-ip': '198.51.100.8' }
+    const matched = await identify(deps, {}, ip)
+    expect(matched.decision).toBe('match')
+    expect(matched.signals.new_device_velocity).toBe('low')
+    expect(velocity.calls).toHaveLength(0)
   })
 
-  it('stays neutral on an untrusted edge (velocity never keyed on forged headers)', async () => {
-    // trustEdgeHeaders OFF: even with a velocity store, the client-supplied
-    // IP/JA4 are untrusted, so no velocity is recorded (mirrors native's None).
-    const velocity = new FakeVelocity(20, 100)
-    const deps: Deps = { ...makeDeps(), velocity }
-    const body = await identify(deps, {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '198.51.100.7',
+  it('propagates a velocity store failure as a 500', async () => {
+    const failing: NewDeviceVelocityStore = {
+      newDeviceVelocityIp: () => Promise.reject(new Error('DO unavailable')),
+    }
+    const deps = makeDeps({}, { velocity: failing })
+    const resp = await handleRequest(
+      postIdentify(await body(deps), { 'cf-connecting-ip': '198.51.100.9' }),
+      deps,
+    )
+    expect(resp.status).toBe(500)
+  })
+})
+
+describe('GET /events/:request_id', () => {
+  const API = { FP_API_KEY: 'api-secret' }
+  const AUTH = 'Bearer api-secret'
+  const event = (id: string, authorization?: string) =>
+    new Request(`https://edge.test/events/${id}`, {
+      headers: authorization ? { authorization } : {},
     })
-    expect(body.signals.new_device_velocity).toBe('low')
-    expect(body.signals.new_device_velocity_ja4).toBe('low')
-    expect(velocity.ipCalls).toHaveLength(0)
-    expect(velocity.ja4Calls).toHaveLength(0)
+
+  it('returns 404 when no API key is configured (endpoint disabled)', async () => {
+    const deps = makeDeps()
+    const first = await identify(deps)
+    expect(
+      (await handleRequest(event(first.request_id, AUTH), deps)).status,
+    ).toBe(404)
+  })
+
+  it('stores nothing when no API key is configured', async () => {
+    const events = new InMemoryEventLog()
+    await identify(makeDeps({}, { events }))
+    expect(events.events.size).toBe(0)
+  })
+
+  it('returns 401 on a missing or wrong bearer credential', async () => {
+    const deps = makeDeps(API)
+    const first = await identify(deps)
+    expect((await handleRequest(event(first.request_id), deps)).status).toBe(
+      401,
+    )
+    expect(
+      (await handleRequest(event(first.request_id, 'Bearer nope'), deps))
+        .status,
+    ).toBe(401)
+    expect(
+      (await handleRequest(event(first.request_id, 'api-secret'), deps)).status,
+    ).toBe(401)
+  })
+
+  it('returns 404 for an unknown request id', async () => {
+    const deps = makeDeps(API)
+    await identify(deps)
+    expect(
+      (await handleRequest(event('f'.repeat(32), AUTH), deps)).status,
+    ).toBe(404)
+  })
+
+  it('returns 404 once the event has expired', async () => {
+    const deps = makeDeps({ ...API, FP_EVENT_TTL_SECS: '0' })
+    const first = await identify(deps)
+    expect(
+      (await handleRequest(event(first.request_id, AUTH), deps)).status,
+    ).toBe(404)
+  })
+
+  it('returns the exact identify body with the client IP recorded', async () => {
+    const db = await memoryDb()
+    const deps = makeDeps(API, {
+      candidates: new FingerprintStore(db),
+      events: new EventStore(db),
+    })
+    const resp = await handleRequest(
+      postIdentify(await body(deps), { 'cf-connecting-ip': '198.51.100.7' }),
+      deps,
+    )
+    const sent = await resp.text()
+    const { request_id } = JSON.parse(sent) as IdentifyResponse
+
+    const got = await handleRequest(event(request_id, AUTH), deps)
+    expect(got.status).toBe(200)
+    expect(got.headers.get('content-type')).toBe('application/json')
+    expect(await got.text()).toBe(sent)
+    expect((await deps.events.get(request_id, Date.now()))?.ip).toBe(
+      '198.51.100.7',
+    )
+  })
+
+  it('serves an event until its TTL elapses', async () => {
+    const events = new InMemoryEventLog()
+    const deps = makeDeps({ ...API, FP_EVENT_TTL_SECS: '60' }, { events })
+    const before = Date.now()
+    const first = await identify(deps)
+    const expiresAt = events.events.get(first.request_id)?.expiresAt ?? 0
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 60_000)
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 60_000)
   })
 })
 
 describe('DELETE /visitor/:id erasure', () => {
-  /** Deps with an injected candidate source whose `erase` is spy-able. */
-  function eraseDeps(env: Env = {}) {
-    const candidates = new EmptyCandidateSource()
-    const erase = vi.spyOn(candidates, 'erase')
-    return { deps: { ...makeDeps(env), candidates }, erase }
-  }
-
-  const del = (id: string, headers: Record<string, string> = {}) =>
+  const del = (id: string, authorization?: string) =>
     new Request(`https://edge.test/visitor/${id}`, {
       method: 'DELETE',
-      headers,
+      headers: authorization ? { authorization } : {},
     })
 
   it('returns 404 when no admin key is configured (endpoint disabled)', async () => {
-    const { deps, erase } = eraseDeps()
-    const resp = await handleRequest(
-      del('v1', { authorization: 'Bearer x' }),
-      deps,
-    )
+    const resp = await handleRequest(del('v1', 'Bearer x'), makeDeps())
     expect(resp.status).toBe(404)
-    expect(erase).not.toHaveBeenCalled()
   })
 
   it('returns 401 on a missing or wrong bearer credential', async () => {
-    const { deps, erase } = eraseDeps({ FP_ADMIN_KEY: 'admin-secret' })
-    // Missing header.
+    const deps = makeDeps({ FP_ADMIN_KEY: 'admin-secret' })
     expect((await handleRequest(del('v1'), deps)).status).toBe(401)
-    // Wrong key.
+    expect((await handleRequest(del('v1', 'Bearer nope'), deps)).status).toBe(
+      401,
+    )
     expect(
-      (await handleRequest(del('v1', { authorization: 'Bearer nope' }), deps))
-        .status,
+      (await handleRequest(del('v1', 'Basic admin-secret'), deps)).status,
     ).toBe(401)
-    // Not a bearer scheme.
-    expect(
-      (await handleRequest(del('v1', { authorization: 'admin-secret' }), deps))
-        .status,
-    ).toBe(401)
-    expect(erase).not.toHaveBeenCalled()
   })
 
-  it('returns 204 and erases the visitor when authorized', async () => {
-    const { deps, erase } = eraseDeps({ FP_ADMIN_KEY: 'admin-secret' })
-    const resp = await handleRequest(
-      del('visitor-42', { authorization: 'Bearer admin-secret' }),
-      deps,
+  it('erases with 204, idempotently, and never re-mints the erased id', async () => {
+    const store = new FingerprintStore(await memoryDb())
+    const deps = makeDeps(
+      { FP_ADMIN_KEY: 'admin-secret' },
+      { candidates: store },
     )
-    expect(resp.status).toBe(204)
-    expect(erase).toHaveBeenCalledWith('visitor-42')
+    const first = await identify(deps)
+
+    const auth = 'Bearer admin-secret'
+    expect(
+      (await handleRequest(del(first.visitor_id, auth), deps)).status,
+    ).toBe(204)
+    expect(
+      (await handleRequest(del(first.visitor_id, auth), deps)).status,
+    ).toBe(204)
+
+    // The same device returns as a brand-new visitor under a fresh id.
+    const again = await identify(deps)
+    expect(again.decision).toBe('new_device')
+    expect(again.visitor_id).toMatch(HEX32)
+    expect(again.visitor_id).not.toBe(first.visitor_id)
+  })
+
+  it('erases the identify events of the visitor too', async () => {
+    const db = await memoryDb()
+    const deps = makeDeps(
+      { FP_ADMIN_KEY: 'admin-secret', FP_API_KEY: 'api-secret' },
+      { candidates: new FingerprintStore(db), events: new EventStore(db) },
+    )
+    const first = await identify(deps)
+    const fetchEvent = () =>
+      handleRequest(
+        new Request(`https://edge.test/events/${first.request_id}`, {
+          headers: { authorization: 'Bearer api-secret' },
+        }),
+        deps,
+      )
+    expect((await fetchEvent()).status).toBe(200)
+    expect(
+      (await handleRequest(del(first.visitor_id, 'Bearer admin-secret'), deps))
+        .status,
+    ).toBe(204)
+    expect((await fetchEvent()).status).toBe(404)
+  })
+
+  it('does not write back a match whose visitor was erased mid-request', async () => {
+    const db = await memoryDb()
+    const store = new FingerprintStore(db)
+    const deps = makeDeps({}, { candidates: store })
+    const first = await identify(deps)
+
+    // Erase between recall and persist, as a concurrent DELETE would.
+    const racing: CandidateSource = {
+      recall: async (keys) => {
+        const recalled = await store.recall(keys)
+        await store.erase(first.visitor_id)
+        return recalled
+      },
+      persist: (outcome, nowMs) => store.persist(outcome, nowMs),
+      erase: (id) => store.erase(id),
+    }
+    const matched = await identify({ ...deps, candidates: racing })
+    expect(matched.decision).toBe('match')
+    expect(matched.visitor_id).toBe(first.visitor_id)
+
+    const [row] = await db.select({ n: count() }).from(templates)
+    expect(row?.n).toBe(0)
   })
 })
 
@@ -716,16 +722,14 @@ describe('CORS (browser playground)', () => {
     expect(resp.headers.get('access-control-allow-methods')).toContain('POST')
   })
 
-  it('reflects an allowed origin and exposes the signature headers', async () => {
+  it('reflects an allowed origin without exposing extra headers', async () => {
     const resp = await handleRequest(
       withOrigin('/challenge', ORIGIN),
       corsDeps(),
     )
     expect(resp.status).toBe(200)
     expect(resp.headers.get('access-control-allow-origin')).toBe(ORIGIN)
-    expect(
-      resp.headers.get('access-control-expose-headers')?.toLowerCase(),
-    ).toContain(SIGNATURE_HEADER)
+    expect(resp.headers.get('access-control-expose-headers')).toBeNull()
   })
 
   it('does not echo an unlisted origin', async () => {
@@ -744,115 +748,5 @@ describe('CORS (browser playground)', () => {
       makeDeps(),
     )
     expect(resp.headers.get('access-control-allow-origin')).toBeNull()
-  })
-})
-
-describe('client integrity probes (top-level `integrity`, shared WASM verdict)', () => {
-  const allNoise = {
-    canvas: 'noise',
-    webgl: 'noise',
-    audio: 'noise',
-    rect: 'noise',
-  }
-  const allOk = { canvas: 'ok', webgl: 'ok', audio: 'ok', rect: 'ok' }
-
-  /** Identify a fixed probe on FRESH deps (identical base confidence) with an
-   *  optional top-level `integrity`, returning the body. */
-  async function identifyIntegrity(
-    env: Env,
-    integrity?: Record<string, unknown>,
-  ): Promise<IdentifyResponse> {
-    const deps = makeDeps(env)
-    const { nonce } = await challenge(deps)
-    const body: Record<string, unknown> = {
-      nonce,
-      stable_components: probeComponents(),
-    }
-    if (integrity !== undefined) body.integrity = integrity
-    const resp = await handleRequest(postIdentify(body), deps)
-    expect(resp.status).toBe(200)
-    return (await resp.json()) as IdentifyResponse
-  }
-
-  it('surfaces noise without moving confidence by default', async () => {
-    const base = await identifyIntegrity({})
-    const noisy = await identifyIntegrity({}, allNoise)
-    expect(base.signals.client_integrity).toBe('unavailable')
-    expect(noisy.signals.client_integrity).toBe('noise')
-    expect(noisy.confidence).toBe(base.confidence)
-  })
-
-  it('downgrades confidence on noise only when the penalty is enabled', async () => {
-    const env: Env = { FP_INTEGRITY_PENALTY_ENABLED: '1' }
-    const base = await identifyIntegrity(env)
-    const noisy = await identifyIntegrity(env, allNoise)
-    expect(noisy.signals.client_integrity).toBe('noise')
-    expect(noisy.confidence).toBeLessThan(base.confidence)
-    const clean = await identifyIntegrity(env, allOk)
-    expect(clean.signals.client_integrity).toBe('ok')
-    expect(clean.confidence).toBe(base.confidence)
-  })
-
-  it('reads malformed material as unavailable (neutral), never as noise', async () => {
-    const env: Env = { FP_INTEGRITY_PENALTY_ENABLED: '1' }
-    const base = await identifyIntegrity(env)
-    const malformed = await identifyIntegrity(env, {
-      canvas: 1,
-      other: 'noise',
-    })
-    expect(malformed.signals.client_integrity).toBe('unavailable')
-    expect(malformed.confidence).toBe(base.confidence)
-  })
-})
-
-describe('persona coherence (UA OS family vs fonts, shared WASM label)', () => {
-  const WINDOWS_UA =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
-
-  /** An SDK-shaped payload: the UA rides under botd, not as a top-level key. */
-  function sdkLike(fonts: unknown): Record<string, unknown> {
-    return {
-      platform: 'Win32',
-      fonts,
-      botd: { signals: { userAgent: { value: WINDOWS_UA, state: 0 } } },
-    }
-  }
-
-  async function identifyComponents(
-    components: Record<string, unknown>,
-  ): Promise<IdentifyResponse> {
-    const deps = makeDeps()
-    const { nonce } = await challenge(deps)
-    const resp = await handleRequest(
-      postIdentify({ nonce, stable_components: components }),
-      deps,
-    )
-    expect(resp.status).toBe(200)
-    return (await resp.json()) as IdentifyResponse
-  }
-
-  it('flags a Windows UA with no Windows core fonts as a mismatch, surfaced-only', async () => {
-    const mismatch = await identifyComponents(sdkLike(['Arial', 'Courier New']))
-    const consistent = await identifyComponents(sdkLike(['Calibri']))
-    expect(mismatch.signals.persona_coherence).toBe('mismatch')
-    expect(consistent.signals.persona_coherence).toBe('consistent')
-    expect(mismatch.confidence).toBe(consistent.confidence)
-  })
-
-  it('reads unknown without a fonts array or a curated OS family', async () => {
-    const noFonts = await identifyComponents(sdkLike(undefined))
-    expect(noFonts.signals.persona_coherence).toBe('unknown')
-    const linux = await identifyComponents({
-      ...sdkLike([]),
-      botd: {
-        signals: {
-          userAgent: {
-            value: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/149',
-            state: 0,
-          },
-        },
-      },
-    })
-    expect(linux.signals.persona_coherence).toBe('unknown')
   })
 })

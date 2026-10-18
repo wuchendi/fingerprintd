@@ -2,16 +2,18 @@
  * Route aggregation layer — the single place that composes the edge's HTTP
  * surface. It registers the bare `GET /health` and mounts the domain
  * sub-routers (fingerprint: `GET /challenge`, `POST /identify`,
- * `DELETE /visitor/:id`; check-in: `POST /checkin/assess`) over the injected
- * {@link Deps}, with per-IP rate limits in front of `POST /identify` +
- * `POST /checkin/assess` (one shared bucket) and `GET /challenge` (its own). `app.ts` mounts this aggregate; the handler bodies
- * themselves live in each module's `*.routes.ts`.
+ * `DELETE /visitor/:id`; events: `GET /events/:request_id`; check-in:
+ * `POST /checkin/assess`) over the injected {@link Deps}, with per-IP rate
+ * limits in front of `POST /identify` + `POST /checkin/assess` (one shared
+ * bucket) and `GET /challenge` (its own). `app.ts` mounts this aggregate; the
+ * handler bodies themselves live in each module's `*.routes.ts`.
  */
 
 import type { MiddlewareHandler } from 'hono'
 import { Hono } from 'hono'
 import type { Deps, RateLimiter } from '../app'
 import { checkinRoutes } from '../modules/checkin'
+import { eventsRoutes } from '../modules/events'
 import { fingerprintRoutes } from '../modules/fingerprint'
 
 /** Paths whose POSTs are rate limited per client IP. */
@@ -44,8 +46,9 @@ export function routes(deps: Deps): Hono {
   app.get('/challenge', rateLimit(deps.challengeRateLimiter))
 
   // Mount the domain sub-routers. Each takes the structurally-compatible slice
-  // of `deps` it needs; the fingerprint and check-in domains share no imports.
+  // of `deps` it needs; the domains share no imports (only `lib/`).
   app.route('/', fingerprintRoutes(deps))
+  app.route('/', eventsRoutes(deps))
   app.route('/', checkinRoutes(deps))
 
   return app

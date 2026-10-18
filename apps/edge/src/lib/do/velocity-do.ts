@@ -1,22 +1,28 @@
 /**
  * Cross-session new-device velocity counters as a Durable Object.
  *
- * Every `NewDevice` verdict on `/identify` mints a fresh `visitorId`; the edge
- * counts how many distinct ones an IP (or JA4 shape class) produced inside a
- * rolling window and bands that count like `fingerprintd::fuzzy::velocity`. A
+ * Every `new_device` verdict on `/identify` mints a fresh visitor id; the edge
+ * counts how many distinct ones an IP produced inside a rolling window and the
+ * WASM engine bands that count like `fingerprintd::fuzzy::velocity`. A
  * Durable Object gives the edge the primitive the database cannot: a
  * single-threaded instance whose storage is serialized, so a distinct-member
  * count is maintained incrementally and read atomically on the hot path.
  *
  * ONE INSTANCE PER KEY: the host addresses the DO by `idFromName(scopeKey)`
- * (`nv:<ip>` or `nvja4:<class>`), so each key's rolling window lives in its own
- * instance. Each `bump` records the member (the minted visitorId) with an
- * expiry, prunes lapsed members, and returns the live distinct count. An alarm
- * at the furthest expiry evicts a fully-lapsed instance so storage does not leak.
+ * (`nv:<ip>`), so each key's rolling window lives in its own instance. Each
+ * `bump` records the member (the minted visitor id) with an expiry, prunes
+ * lapsed members, caps the live set at {@link MAX_IDS_PER_KEY}, and returns the
+ * live distinct count. An alarm at the furthest expiry evicts a fully-lapsed
+ * instance so storage does not leak.
  */
 
 /** The single storage key each per-key instance holds. */
 const RECORD_KEY = 'members'
+
+/** Most live members kept per key (native `MAX_IDS_PER_KEY`): the earliest to
+ *  expire are dropped first, so storage stays bounded while the count still
+ *  saturates far above the `high` band. */
+const MAX_IDS_PER_KEY = 64
 
 /** Live members of one key's window: `memberId -> absolute expiry (Unix ms)`. */
 type MemberMap = Record<string, number>
@@ -42,7 +48,7 @@ export class VelocityDurableObject {
 
   /**
    * Record `member` as live for `windowMs`, drop any member whose expiry has
-   * passed, persist the pruned map, and return the surviving distinct count. The
+   * passed, cap the live set, persist the pruned map, and return the surviving distinct count. The
    * read-prune-write runs in one serialized invocation on this single-threaded
    * instance, so concurrent bumps of the same key cannot lose an update.
    */
@@ -53,6 +59,13 @@ export class VelocityDurableObject {
       if (expiresAt <= now) delete members[id]
     }
     members[member] = now + windowMs
+    const live = Object.entries(members)
+    if (live.length > MAX_IDS_PER_KEY) {
+      live.sort((a, b) => a[1] - b[1])
+      for (const [id] of live.slice(0, live.length - MAX_IDS_PER_KEY)) {
+        delete members[id]
+      }
+    }
     await this.state.storage.put<MemberMap>(RECORD_KEY, members)
     // Reclaim the instance once the last member lapses, so a key that goes
     // quiet does not leak storage. The alarm re-checks on fire (below).
@@ -83,68 +96,38 @@ export class VelocityDurableObject {
 
 /**
  * The cross-session new-device velocity surface the `/identify` path consumes:
- * distinct new devices minted for an IP (or JA4 shape class) inside the rolling
- * window. {@link VelocityStore} implements it over the DO; a unit test injects a
- * fake. Kept structural so the router never depends on the concrete DO class.
+ * distinct new devices minted for an IP inside the rolling window.
+ * {@link VelocityStore} implements it over the DO; unit tests inject a fake.
  */
 export interface NewDeviceVelocityStore {
-  /** Distinct new devices minted for `ip` within `windowMs`. */
+  /** Record `member` (the minted visitor id) as a new device for `ip` and
+   *  return the distinct count within `windowMs`. */
   newDeviceVelocityIp(
     ip: string,
-    visitorId: string,
-    windowMs: number,
-  ): Promise<number>
-  /** Distinct new devices minted for a JA4 shape `class` within `windowMs`. */
-  newDeviceVelocityJa4(
-    ja4Class: string,
-    visitorId: string,
+    member: string,
     windowMs: number,
   ): Promise<number>
 }
 
 /**
  * Host adapter presenting the new-device velocity counters over the
- * {@link VelocityDurableObject} binding. Each key is addressed by
- * `idFromName(scope + ':' + key)`, so an IP and a JA4 class route to
- * independent instances.
+ * {@link VelocityDurableObject} binding. Each IP is addressed by
+ * `idFromName('nv:' + ip)`, its own instance.
  */
 export class VelocityStore implements NewDeviceVelocityStore {
   constructor(private readonly namespace: DurableObjectNamespace) {}
 
   /**
-   * Distinct new devices minted for `ip` within `windowMs` — the hot-path,
-   * edge-side form of the per-IP new-device velocity (`fingerprintd::fuzzy::velocity`).
-   * A `NewDevice` verdict always mints a fresh `visitorId`, so the distinct-member
-   * count of visitorIds seen for the IP equals fp-core's new-device event count.
+   * Distinct new devices minted for `ip` within `windowMs`. Every `new_device`
+   * verdict mints a fresh visitor id, so the distinct-member count equals the
+   * native per-IP new-device event count.
    */
   async newDeviceVelocityIp(
     ip: string,
-    visitorId: string,
-    windowMs: number,
-  ): Promise<number> {
-    return this.bump(`nv:${ip}`, visitorId, windowMs)
-  }
-
-  /**
-   * Distinct new devices minted for a JA4 shape `class` within `windowMs` — the
-   * secondary per-JA4-class new-device velocity. Namespaced `nvja4:`
-   * so a class string can never collide with an `nv:` IP key in the shared store.
-   */
-  async newDeviceVelocityJa4(
-    ja4Class: string,
-    visitorId: string,
-    windowMs: number,
-  ): Promise<number> {
-    return this.bump(`nvja4:${ja4Class}`, visitorId, windowMs)
-  }
-
-  /** Route a bump to the key's own instance and return its distinct count. */
-  private async bump(
-    scopeKey: string,
     member: string,
     windowMs: number,
   ): Promise<number> {
-    const stub = this.namespace.get(this.namespace.idFromName(scopeKey))
+    const stub = this.namespace.get(this.namespace.idFromName(`nv:${ip}`))
     const response = await stub.fetch(
       `https://velocity/bump?member=${encodeURIComponent(member)}&window=${windowMs}`,
       { method: 'POST' },

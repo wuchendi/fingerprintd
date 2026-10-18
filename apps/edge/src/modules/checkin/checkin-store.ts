@@ -5,8 +5,8 @@
  * instead of recall/drift it appends check-in events and derives the windowed
  * farming aggregates from them.
  *
- * One table (`src/db/schema.ts`): `checkin_events(account_id, visitor_id, ip,
- * ts)`. Every aggregate is a `COUNT(DISTINCT ...)` (or a small last-N scan)
+ * One table (`src/db/schema.ts`): `checkin_events(request_id, account_id,
+ * visitor_id, ip, ts)`. Every aggregate is a `COUNT(DISTINCT ...)` (or a small last-N scan)
  * bounded by a `ts >= now - window` range served by one of the composite
  * indexes. Pure aggregate query logic only — NO risk scoring lives here; this
  * layer answers "how many distinct X in window W", nothing more.
@@ -37,14 +37,26 @@ export const INTERVAL_SAMPLE = 10
 
 /** A single check-in observation appended by {@link CheckinEventStore.record}. */
 export interface CheckinEvent {
+  /** The identify event the check-in was assessed on (one check-in each). */
+  request_id: string
   /** Business identity being assessed. */
-  accountId: string
-  /** Device identifier carried through from the fingerprintd verdict. */
-  visitorId: string
-  /** Edge-observed client IP (never client-reported). */
+  account_id: string
+  /** Device identifier of the stored identify event. */
+  visitor_id: string
+  /** Edge-observed client IP of that identify (`''` when absent). */
   ip: string
   /** Observation time (Unix ms, edge-stamped). */
   ts: number
+}
+
+/** What {@link CheckinEventStore.record} did with a check-in. */
+export interface RecordResult {
+  /** `true` when this call appended the row; `false` when the `request_id`
+   *  was already recorded. */
+  inserted: boolean
+  /** The account the `request_id` is recorded for — the caller's on insert,
+   *  the first recorder's otherwise. */
+  account_id: string
 }
 
 /**
@@ -115,20 +127,41 @@ export class CheckinEventStore {
   }
 
   /** Append one check-in event. Rows are never updated — the append-only log is
-   *  the source of truth every aggregate is derived from. */
-  async record(event: CheckinEvent): Promise<void> {
-    await this.db.insert(checkinEvents).values(event)
+   *  the source of truth every aggregate is derived from. A second event for
+   *  the same `request_id` inserts nothing, so replaying one identify cannot
+   *  inflate the aggregates; the result then names the account the existing
+   *  row was recorded for. */
+  async record(event: CheckinEvent): Promise<RecordResult> {
+    const inserted = await this.db
+      .insert(checkinEvents)
+      .values(event)
+      .onConflictDoNothing()
+      .returning({ account_id: checkinEvents.account_id })
+    if (inserted.length > 0) {
+      return { inserted: true, account_id: event.account_id }
+    }
+    const existing = await this.db
+      .select({ account_id: checkinEvents.account_id })
+      .from(checkinEvents)
+      .where(eq(checkinEvents.request_id, event.request_id))
+      .get()
+    // The row can vanish between the two statements only to the retention
+    // purge; the request_id is then no longer bound to any account.
+    return {
+      inserted: false,
+      account_id: existing?.account_id ?? event.account_id,
+    }
   }
 
   /**
-   * Compute every aggregate for the `(accountId, visitorId, ip)` triple
+   * Compute every aggregate for the `(account_id, visitor_id, ip)` triple
    * as of `now` (Unix ms). Independent queries are issued concurrently — the
    * database serves each from a composite index — and folded into one
    * {@link AggregateResult}.
    */
   async getAggregates(
-    accountId: string,
-    visitorId: string,
+    account_id: string,
+    visitor_id: string,
     ip: string,
     now: number,
   ): Promise<AggregateResult> {
@@ -144,15 +177,15 @@ export class CheckinEventStore {
       burstDevice,
       burstIp,
     ] = await Promise.all([
-      this.distinctAccountsForVisitor(visitorId, now - DAY_MS),
-      this.distinctAccountsForVisitor(visitorId, now - 7 * DAY_MS),
-      this.distinctVisitorsForAccount(accountId, now - 7 * DAY_MS),
-      this.distinctVisitorsForAccount(accountId, now - 30 * DAY_MS),
-      this.newDeviceRate(accountId),
+      this.distinctAccountsForVisitor(visitor_id, now - DAY_MS),
+      this.distinctAccountsForVisitor(visitor_id, now - 7 * DAY_MS),
+      this.distinctVisitorsForAccount(account_id, now - 7 * DAY_MS),
+      this.distinctVisitorsForAccount(account_id, now - 30 * DAY_MS),
+      this.newDeviceRate(account_id),
       this.distinctAccountsForIp(ip, now - HOUR_MS),
       this.distinctAccountsForIp(ip, now - 24 * HOUR_MS),
-      this.intervalRegularity(accountId),
-      this.burstForVisitor(visitorId, bucketStart(now)),
+      this.intervalRegularity(account_id),
+      this.burstForVisitor(visitor_id, bucketStart(now)),
       this.burstForIp(ip, bucketStart(now)),
     ])
     return {
@@ -167,13 +200,13 @@ export class CheckinEventStore {
 
   /** Distinct accounts this device checked into since `sinceTs` (device fan-out). */
   private async distinctAccountsForVisitor(
-    visitorId: string,
+    visitor_id: string,
     sinceTs: number,
   ): Promise<number> {
     return this.countDistinct(
-      checkinEvents.accountId,
+      checkinEvents.account_id,
       and(
-        eq(checkinEvents.visitorId, visitorId),
+        eq(checkinEvents.visitor_id, visitor_id),
         gte(checkinEvents.ts, sinceTs),
       ),
     )
@@ -181,13 +214,13 @@ export class CheckinEventStore {
 
   /** Distinct devices this account checked in from since `sinceTs` (cultivation). */
   private async distinctVisitorsForAccount(
-    accountId: string,
+    account_id: string,
     sinceTs: number,
   ): Promise<number> {
     return this.countDistinct(
-      checkinEvents.visitorId,
+      checkinEvents.visitor_id,
       and(
-        eq(checkinEvents.accountId, accountId),
+        eq(checkinEvents.account_id, account_id),
         gte(checkinEvents.ts, sinceTs),
       ),
     )
@@ -199,29 +232,29 @@ export class CheckinEventStore {
     sinceTs: number,
   ): Promise<number> {
     return this.countDistinct(
-      checkinEvents.accountId,
+      checkinEvents.account_id,
       and(eq(checkinEvents.ip, ip), gte(checkinEvents.ts, sinceTs)),
     )
   }
 
   /**
    * Device-churn rate over the account's last {@link NEW_DEVICE_SAMPLE} events:
-   * `distinct(visitorId) / sampled`. A high ratio means the account keeps
+   * `distinct(visitor_id) / sampled`. A high ratio means the account keeps
    * presenting fresh devices (fingerprint reset / emulator recycling); a stable
    * human is ≈ `1 / sampled`. Zero events ⇒ rate 0.
    */
   private async newDeviceRate(
-    accountId: string,
+    account_id: string,
   ): Promise<AggregateResult['account_new_device_rate']> {
     const rows = await this.db
-      .select({ visitorId: checkinEvents.visitorId })
+      .select({ visitor_id: checkinEvents.visitor_id })
       .from(checkinEvents)
-      .where(eq(checkinEvents.accountId, accountId))
+      .where(eq(checkinEvents.account_id, account_id))
       .orderBy(desc(checkinEvents.ts))
       .limit(NEW_DEVICE_SAMPLE)
     const sampled = rows.length
     if (sampled === 0) return { rate: 0, sampled: 0 }
-    const distinct = new Set(rows.map((r) => r.visitorId)).size
+    const distinct = new Set(rows.map((r) => r.visitor_id)).size
     return { rate: distinct / sampled, sampled }
   }
 
@@ -233,12 +266,12 @@ export class CheckinEventStore {
    * intervals (≤ 2 events) is undecidable ⇒ `regularity: 0`.
    */
   private async intervalRegularity(
-    accountId: string,
+    account_id: string,
   ): Promise<AggregateResult['checkin_interval_regularity']> {
     const rows = await this.db
       .select({ ts: checkinEvents.ts })
       .from(checkinEvents)
-      .where(eq(checkinEvents.accountId, accountId))
+      .where(eq(checkinEvents.account_id, account_id))
       .orderBy(desc(checkinEvents.ts))
       .limit(INTERVAL_SAMPLE)
     const times = rows.map((r) => r.ts)
@@ -259,12 +292,12 @@ export class CheckinEventStore {
 
   /** Events from this device in the current minute bucket (live batch spike). */
   private async burstForVisitor(
-    visitorId: string,
+    visitor_id: string,
     bucketStartTs: number,
   ): Promise<number> {
     return this.countRows(
       and(
-        eq(checkinEvents.visitorId, visitorId),
+        eq(checkinEvents.visitor_id, visitor_id),
         gte(checkinEvents.ts, bucketStartTs),
       ),
     )
@@ -279,7 +312,7 @@ export class CheckinEventStore {
 
   /** `COUNT(DISTINCT column) WHERE <where>` as a plain number. */
   private async countDistinct(
-    column: typeof checkinEvents.accountId | typeof checkinEvents.visitorId,
+    column: typeof checkinEvents.account_id | typeof checkinEvents.visitor_id,
     where: ReturnType<typeof and>,
   ): Promise<number> {
     const row = await this.db

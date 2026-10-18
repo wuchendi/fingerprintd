@@ -7,7 +7,8 @@
  * initializes the WASM runtime once, builds the configured engine and the host
  * state, and hands each request to the Hono app in `app.ts`.
  *
- * State: the fingerprint index and the check-in event log live in the database
+ * State: the fingerprint index, the identify events and the check-in event log
+ * live in the database
  * `getDb` selects (libSQL by default, D1 with `DB_TYPE=d1`); nonces and
  * new-device velocity live in the `NONCE` / `VELOCITY` Durable Objects; the
  * `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT` bindings cap per-IP request rates. Every one of these, plus
@@ -25,6 +26,7 @@ import { getDb } from './db/client'
 import { DurableNonceStore } from './lib/do/nonce-do'
 import { VelocityStore } from './lib/do/velocity-do'
 import { CheckinEventStore } from './modules/checkin'
+import { EventStore } from './modules/events'
 import {
   EdgeEngine,
   FingerprintStore,
@@ -55,9 +57,10 @@ function buildDeps(env: Env): Deps {
   const db = getDb(env)
   initEngineRuntime(wasmModule)
   deps = {
-    engine: new EdgeEngine(config),
+    engine: new EdgeEngine(config.saltSecret),
     nonces: new DurableNonceStore(env.NONCE, config.nonceTtlSecs),
     candidates: new FingerprintStore(db),
+    events: new EventStore(db),
     config,
     checkin: new CheckinEventStore(db),
     velocity: new VelocityStore(env.VELOCITY),
@@ -74,13 +77,15 @@ export default {
   },
 
   /**
-   * Database retention purge, driven by the `wrangler.jsonc` cron trigger. Two
-   * independent purges run in this one invocation:
+   * Database retention purge, driven by the `wrangler.jsonc` cron trigger. Four
+   * independent steps run in this one invocation:
+   *   - identify events: every event past its `expires_at` is deleted;
    *   - fingerprint templates: when `FP_RETENTION_SECS` > 0, delete every
    *     template last seen beyond the window plus its blocking-index rows;
+   *   - erasure tombstones: always trimmed to the newest `TOMBSTONE_CAP`;
    *   - check-in events: when `CHECKIN_RETENTION_SECS` > 0, delete every
    *     check-in event older than the window.
-   * Either disabled (0) ⇒ that purge is a no-op. The purge queries live on the
+   * A disabled (0) retention window makes its purge a no-op. The queries live on the
    * respective stores so they are unit-testable without the cron.
    */
   async scheduled(
@@ -89,14 +94,23 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<void> {
     const config = resolveConfig(env)
+    const expired = await new EventStore(getDb(env)).purgeExpired(Date.now())
+    if (expired > 0) {
+      console.log(`event purge: removed ${expired} expired event(s)`)
+    }
+    const fingerprints = new FingerprintStore(getDb(env))
     if (config.retentionMs > 0) {
-      const purged = await new FingerprintStore(getDb(env)).purgeOlderThan(
+      const purged = await fingerprints.purgeOlderThan(
         Date.now(),
         config.retentionMs,
       )
       if (purged > 0) {
         console.log(`retention purge: removed ${purged} stale template(s)`)
       }
+    }
+    const trimmed = await fingerprints.trimTombstones()
+    if (trimmed > 0) {
+      console.log(`tombstone trim: removed ${trimmed} oldest tombstone(s)`)
     }
     if (config.checkinRetentionMs > 0) {
       const purged = await new CheckinEventStore(getDb(env)).purgeOlderThan(
