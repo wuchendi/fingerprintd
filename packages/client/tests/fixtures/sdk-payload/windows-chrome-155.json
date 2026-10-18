@@ -3,41 +3,20 @@
     "label": "windows-chrome-155",
     "source": "real device, deployed playground (fingerprintd.pages.dev), SDK 0.0.2",
     "captured_at": "2026-10-14",
-    "note": "SDK-adapted stable_components as sent to /identify, ANONYMIZED: every hash replaced by a random value of the same shape, fonts reduced to the stock-Windows core set, GPU / screen / cores / memory / audio replaced by common values. Shapes and types are real; values identify no device. botd and one-time fields (nonce, ts, probe) removed"
+    "note": "SDK-adapted components as sent to /identify, ANONYMIZED: every hash replaced by a random value of the same shape, fonts reduced to the stock-Windows core set, GPU / screen / cores / memory / audio replaced by common values. Shapes and types are real; values identify no device. Keys renamed to the closed component schema; keys outside it, botd, integrity and one-time fields (nonce, ts) removed"
   },
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
-  "integrity": {
-    "canvas": "ok",
-    "webgl": "ok",
-    "audio": "ok",
-    "rect": "ok"
-  },
-  "stable_components": {
-    "userAgentData": "14b66de801119937468bdcd73ac30eaa",
-    "fontPreferences": "fe80762e77d27b1684d0248f62910e1d",
-    "screenFrame": "42e61f270e9700d38c71bed74dd07640",
-    "colorDepth": 24,
-    "sessionStorage": true,
-    "localStorage": true,
-    "indexedDB": true,
-    "openDatabase": false,
-    "touchSupport": "5a56accd6574d7ff1d45520db50eee5f",
-    "vendor": "Google Inc.",
-    "vendorFlavors": "e56b85fde135b9811aad8013a206babf",
-    "cookiesEnabled": true,
-    "colorGamut": "srgb",
-    "forcedColors": false,
-    "monochrome": 0,
-    "contrast": 0,
-    "reducedMotion": false,
-    "reducedTransparency": false,
-    "hdr": false,
-    "math": "bdc3d41fcb055c107fa62407dc407045",
-    "pdfViewerEnabled": true,
-    "architecture": 255,
-    "applePay": -1,
-    "audioBaseLatency": -2,
-    "dateTimeLocale": "zh-CN",
+  "components": {
+    "webgl": "Google Inc. (Intel)|ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E92) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "webgl_extensions": "ad0a247cdd2b36c2c9eb9786cf517296",
+    "platform": "Win32",
+    "timezone": "Asia/Shanghai",
+    "languages": "zh-CN",
+    "audio": 124.04347527516074,
+    "canvas": "ce34b05488fa4f583a50b1547aa80f64",
+    "cpu_cores": 8,
+    "device_memory": 8,
+    "screen": "1920x1080",
     "fonts": [
       "Calibri",
       "Marlett",
@@ -45,14 +24,6 @@
       "Microsoft Uighur",
       "Segoe UI Light"
     ],
-    "audio": 124.04347527516074,
-    "canvas": "ce34b05488fa4f583a50b1547aa80f64",
-    "languages": "zh-CN",
-    "device_memory": 8,
-    "screen": "1920x1080",
-    "cpu_cores": 8,
-    "timezone": "Asia/Shanghai",
-    "platform": "Win32",
     "plugins": [
       "PDF Viewer",
       "Chrome PDF Viewer",
@@ -60,7 +31,10 @@
       "Microsoft Edge PDF Viewer",
       "WebKit built-in PDF"
     ],
-    "webgl": "Google Inc. (Intel)|ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E92) Direct3D11 vs_5_0 ps_5_0, D3D11)",
-    "webgl_extensions": "ad0a247cdd2b36c2c9eb9786cf517296"
+    "font_preferences": "fe80762e77d27b1684d0248f62910e1d",
+    "screen_frame": "42e61f270e9700d38c71bed74dd07640",
+    "math": "bdc3d41fcb055c107fa62407dc407045",
+    "touch_support": "5a56accd6574d7ff1d45520db50eee5f",
+    "user_agent_data": "14b66de801119937468bdcd73ac30eaa"
   }
 }

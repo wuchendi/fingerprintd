@@ -14,9 +14,7 @@ describe('getChallenge', () => {
 
     const challenge = await getChallenge('https://fp.example.com/', { fetch })
 
-    expect(challenge.nonce).toBe('nonce-abc')
-    expect(challenge.expires_in).toBe(30)
-    expect(challenge.collect.challenge.targets).toEqual(['canvas', 'audio'])
+    expect(challenge).toEqual({ nonce: 'nonce-abc', expires_in: 30 })
     // Trailing slash collapsed, GET to /challenge.
     expect(recorded[0]?.url).toBe('https://fp.example.com/challenge')
     expect(recorded[0]?.method).toBe('GET')
@@ -26,74 +24,39 @@ describe('getChallenge', () => {
     const fetch = mockFetch({ challenge: { status: 500, body: {} } })
     await expect(
       getChallenge('https://fp.example.com', { fetch }),
-    ).rejects.toThrow('500')
+    ).rejects.toThrow('GET /challenge failed: 500')
   })
 })
 
 describe('identify', () => {
-  it('posts the full body shape when optional fields are present', async () => {
+  it('posts the body verbatim and returns the parsed response', async () => {
     const recorded: RecordedRequest[] = []
     const fetch = mockFetch({ identify: { body: sampleIdentify() } }, recorded)
 
     const body: IdentifyRequest = {
       nonce: 'n1',
       ts: 1_700_000_000_000,
-      probe: 'deadbeef',
-      stable_components: { userAgent: 'Chrome/120' },
+      components: { platform: 'Win32', cpu_cores: 8 },
+      user_agent: 'Chrome/120',
+      botd: { bot: false },
+      integrity: { canvas: 'ok', webgl: 'ok', audio: 'ok', rect: 'ok' },
     }
-    await identify('https://fp.example.com', body, { fetch })
+    const result = await identify('https://fp.example.com', body, { fetch })
 
-    const sent = JSON.parse(recorded[0]?.body ?? '{}')
-    expect(sent).toEqual(body)
+    expect(JSON.parse(recorded[0]?.body ?? '{}')).toEqual(body)
+    expect(recorded[0]?.url).toBe('https://fp.example.com/identify')
     expect(recorded[0]?.method).toBe('POST')
+    expect(result).toEqual(sampleIdentify())
   })
 
-  it('omits optional fields left unset', async () => {
-    const recorded: RecordedRequest[] = []
-    const fetch = mockFetch({ identify: { body: sampleIdentify() } }, recorded)
-
-    await identify(
-      'https://fp.example.com',
-      { nonce: 'n1', stable_components: { ua: 'x' } },
-      { fetch },
-    )
-
-    const sent = JSON.parse(recorded[0]?.body ?? '{}')
-    expect(sent).toEqual({ nonce: 'n1', stable_components: { ua: 'x' } })
-    expect('ts' in sent).toBe(false)
-    expect('probe' in sent).toBe(false)
-  })
-
-  it('returns the parsed body plus signature headers when signed', async () => {
-    const fetch = mockFetch({
-      identify: {
-        headers: {
-          'x-fp-timestamp': '1700000000000',
-          'x-fp-signature': 'ab12',
-        },
-        body: sampleIdentify(),
-      },
-    })
-
-    const { result, timestamp, signature } = await identify(
-      'https://fp.example.com',
-      { nonce: 'n1', stable_components: {} },
-      { fetch },
-    )
-
-    expect(result.visitorId).toBe('v_123')
-    expect(timestamp).toBe('1700000000000')
-    expect(signature).toBe('ab12')
-  })
-
-  it('leaves signature fields undefined when the response is unsigned', async () => {
-    const fetch = mockFetch({ identify: { body: sampleIdentify() } })
-    const { timestamp, signature } = await identify(
-      'https://fp.example.com',
-      { nonce: 'n1', stable_components: {} },
-      { fetch },
-    )
-    expect(timestamp).toBeUndefined()
-    expect(signature).toBeUndefined()
+  it('throws on a non-ok status', async () => {
+    const fetch = mockFetch({ identify: { status: 400, body: {} } })
+    await expect(
+      identify(
+        'https://fp.example.com',
+        { nonce: 'n1', ts: 1, components: {} },
+        { fetch },
+      ),
+    ).rejects.toThrow('POST /identify failed: 400')
   })
 })

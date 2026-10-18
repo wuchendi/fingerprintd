@@ -4,17 +4,17 @@ const steps = [
   {
     n: '01',
     title: 'Challenge',
-    body: 'Server issues a nonce and the list of signals to collect.',
+    body: 'Server issues a one-time nonce.',
   },
   {
     n: '02',
     title: 'Collect',
-    body: 'Client gathers stable components and computes an HMAC probe in WASM.',
+    body: 'Client collects device components and sends them with the nonce and a timestamp.',
   },
   {
     n: '03',
     title: 'Identify',
-    body: 'Server judges the evidence and returns a verdict with confidence.',
+    body: 'Server judges the evidence and returns a verdict plus a request_id for server-side lookup.',
   },
 ]
 

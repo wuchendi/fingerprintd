@@ -15,11 +15,9 @@ import { useFingerprintStore } from '../store'
 export function RunPanel() {
   const { t } = useTranslation()
   const baseUrl = useFingerprintStore((s) => s.baseUrl)
-  const signingKey = useFingerprintStore((s) => s.signingKey)
   const accountId = useFingerprintStore((s) => s.accountId)
   const status = useFingerprintStore((s) => s.status)
   const setBaseUrl = useFingerprintStore((s) => s.setBaseUrl)
-  const setSigningKey = useFingerprintStore((s) => s.setSigningKey)
   const setAccountId = useFingerprintStore((s) => s.setAccountId)
   const run = useFingerprintStore((s) => s.run)
   const reset = useFingerprintStore((s) => s.reset)
@@ -49,20 +47,6 @@ export function RunPanel() {
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="signingKey">{t('Signing key (optional)')}</Label>
-          <Input
-            id="signingKey"
-            type="password"
-            value={signingKey}
-            onChange={(e) => setSigningKey(e.target.value)}
-            placeholder={t(
-              'UTF-8 signing key to verify the response signature',
-            )}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-        <div className="space-y-2">
           <Label htmlFor="accountId">{t('Account ID')}</Label>
           <Input
             id="accountId"
@@ -74,7 +58,7 @@ export function RunPanel() {
           />
           <p className="text-xs text-muted-foreground">
             {t(
-              'Business account to score for check-in farming after identify succeeds.',
+              'Business account your backend scores for check-in farming, used in the server-side check-in snippet.',
             )}
           </p>
         </div>

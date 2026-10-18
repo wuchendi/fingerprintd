@@ -1,7 +1,7 @@
 {
   "name": "@cdlab/fingerprintd",
   "version": "0.0.2",
-  "description": "Browser SDK for the fingerprintd challenge/identify flow (collect-only; the server judges).",
+  "description": "Pure-TypeScript browser SDK for the fingerprintd challenge/identify flow (collect-only; the server judges).",
   "type": "module",
   "license": "Apache-2.0",
   "publishConfig": {
@@ -31,12 +31,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./wasm": "./wasm/fp_wasm_bg.wasm"
+    }
   },
   "files": [
-    "dist",
-    "wasm/fp_wasm_bg.wasm"
+    "dist"
   ],
   "sideEffects": false,
   "scripts": {

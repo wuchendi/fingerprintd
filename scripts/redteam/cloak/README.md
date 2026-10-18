@@ -1,17 +1,19 @@
 # Red-team harness: CloakBrowser vs fingerprintd
 
 Runs the **real** client collector (`packages/client` FingerprintJS + BotD,
-adapted to the server schema) plus four known-answer integrity measurements
-inside a fingerprint-noising browser (CloakBrowser, free binary) and inside stock
-Chromium as the negative control. Each run produces one JSON capture:
+adapted to the closed component schema) plus four known-answer integrity
+measurements inside a fingerprint-noising browser (CloakBrowser, free binary) and
+inside stock Chromium as the negative control. Each run produces one JSON capture:
 
 ```json
 {
   "meta": { "label", "mode", "controller", "binary", "persona", "seed", "args", "captured_at" },
   "user_agent": "...",
   "raw_components": { "...un-adapted FingerprintJS components..." },
-  "stable_components": { "...exactly what /identify would receive..." },
-  "integrity_measurements": { "canvas", "webgl", "audio", "rect" }
+  "components": { "...exactly what /identify would receive..." },
+  "botd": { "bot", "kind" },
+  "integrity_measurements": { "canvas", "webgl", "audio", "rect" },
+  "integrity": { "canvas", "webgl", "audio", "rect" }
 }
 ```
 

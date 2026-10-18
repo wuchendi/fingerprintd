@@ -1,19 +1,18 @@
 /**
  * Unit tests for the STABLE-half collector. There is NO headless browser here,
  * so FingerprintJS/BotD are MOCKED: we inject fake loaders (and, once, mock the
- * modules themselves) and assert the WIRING, never real fingerprint values.
+ * modules themselves) and assert the wiring, never real fingerprint values.
  *
- * Contract under test (architecture §4.1 / §4.4):
- *  - raw FingerprintJS components are passed through into `stable_components`;
+ * Contract under test:
+ *  - FingerprintJS components are adapted into closed-schema `components`;
  *  - the FingerprintJS `visitorId`/hash is DISCARDED (never in the payload);
- *  - BotD detection + signals are present under `stable_components.botd`;
- *  - NO `probe` is emitted by this half.
+ *  - BotD's verdict maps to `{ bot, kind? }`;
+ *  - the user agent rides as `user_agent`.
  */
 
 import { describe, expect, it, vi } from 'vitest'
 import type { BotdDetector, FingerprintAgent } from '../../src/fingerprint'
 import { createFingerprintCollector } from '../../src/fingerprint'
-import { sampleChallenge } from '../helpers'
 
 /** A fake FingerprintJS agent returning canned components + a hash to discard. */
 function fakeFingerprint(
@@ -24,10 +23,9 @@ function fakeFingerprint(
     Promise.resolve({ get: () => Promise.resolve({ visitorId, components }) })
 }
 
-/** A fake BotD detector recording call order and returning canned signals. */
+/** A fake BotD detector recording call order and returning a canned verdict. */
 function fakeBotd(
-  detection: unknown,
-  signals: unknown,
+  detection: { bot: boolean; botKind?: string },
   order: string[] = [],
 ): () => Promise<BotdDetector> {
   return () =>
@@ -40,102 +38,102 @@ function fakeBotd(
         order.push('detect')
         return detection
       },
-      getComponents: () => {
-        order.push('getComponents')
-        return signals
-      },
     })
 }
 
 describe('createFingerprintCollector', () => {
-  it('ADAPTS FingerprintJS components into the server schema', async () => {
-    const components = {
-      fonts: { value: ['Arial'], duration: 3 },
-      timezone: { value: 'UTC', duration: 1 },
-    }
+  it('adapts FingerprintJS components into the closed schema', async () => {
     const collect = createFingerprintCollector({
-      loadFingerprint: fakeFingerprint(components),
-      loadBotd: fakeBotd({ bot: false }, { webdriver: false }),
+      loadFingerprint: fakeFingerprint({
+        fonts: { value: ['Arial'], duration: 3 },
+        timezone: { value: 'UTC', duration: 1 },
+        colorDepth: { value: 24, duration: 0 },
+      }),
+      loadBotd: fakeBotd({ bot: false }),
     })
 
-    const { stable_components } = await collect(sampleChallenge())
+    const { components } = await collect()
 
-    // The FJS `{ value, duration }` wrapper is unwrapped: `fonts` (a Set target)
-    // keeps its array and `timezone` (a scalar) is stored bare.
-    expect(stable_components.fonts).toEqual(['Arial'])
-    expect(stable_components.timezone).toBe('UTC')
+    expect(components).toEqual({ fonts: ['Arial'], timezone: 'UTC' })
   })
 
-  it('DISCARDS the FingerprintJS visitorId/hash (never in the payload)', async () => {
+  it('discards the FingerprintJS visitorId/hash (never in the payload)', async () => {
     const collect = createFingerprintCollector({
-      loadFingerprint: fakeFingerprint({ ua: { value: 'x' } }, 'v_client_side'),
-      loadBotd: fakeBotd({ bot: false }, {}),
+      loadFingerprint: fakeFingerprint(
+        { platform: { value: 'x' } },
+        'v_client_side',
+      ),
+      loadBotd: fakeBotd({ bot: false }),
     })
 
-    const { stable_components } = await collect(sampleChallenge())
+    const collected = await collect()
 
-    expect(stable_components.visitorId).toBeUndefined()
-    expect(stable_components.visitor_id).toBeUndefined()
-    expect(stable_components.hash).toBeUndefined()
-    expect(JSON.stringify(stable_components)).not.toContain('v_client_side')
+    expect(JSON.stringify(collected)).not.toContain('v_client_side')
   })
 
-  it('merges BotD detection + signals under a botd sub-object', async () => {
-    const detection = { bot: true, botKind: 'headless_chrome' }
-    const signals = {
-      webdriver: { value: true },
-      languages: { value: [['en']] },
-    }
+  it('maps a BotD detection to { bot: true, kind }', async () => {
     const order: string[] = []
     const collect = createFingerprintCollector({
-      loadFingerprint: fakeFingerprint({ ua: { value: 'x' } }),
-      loadBotd: fakeBotd(detection, signals, order),
+      loadFingerprint: fakeFingerprint({}),
+      loadBotd: fakeBotd({ bot: true, botKind: 'headless_chrome' }, order),
     })
 
-    const { stable_components } = await collect(sampleChallenge())
+    const { botd } = await collect()
 
-    expect(stable_components.botd).toEqual({ detection, signals })
-    // detect()/getComponents() must run only after collect() gathered sources.
-    expect(order).toEqual(['collect', 'detect', 'getComponents'])
+    expect(botd).toEqual({ bot: true, kind: 'headless_chrome' })
+    // detect() must run only after collect() gathered sources.
+    expect(order).toEqual(['collect', 'detect'])
   })
 
-  it('emits ONLY stable_components — no probe', async () => {
+  it('maps a clean BotD verdict to { bot: false }', async () => {
     const collect = createFingerprintCollector({
-      loadFingerprint: fakeFingerprint({ ua: { value: 'x' } }),
-      loadBotd: fakeBotd({ bot: false }, {}),
+      loadFingerprint: fakeFingerprint({}),
+      loadBotd: fakeBotd({ bot: false }),
     })
 
-    const collected = await collect(sampleChallenge())
-
-    expect(collected.probe).toBeUndefined()
-    expect(Object.keys(collected)).toEqual(['stable_components'])
+    expect((await collect()).botd).toEqual({ bot: false })
   })
 
-  it('does not mix the challenge nonce into stable_components (architecture §4.1)', async () => {
+  it('emits the injected user agent and no other top-level keys', async () => {
     const collect = createFingerprintCollector({
-      loadFingerprint: fakeFingerprint({ ua: { value: 'x' } }),
-      loadBotd: fakeBotd({ bot: false }, {}),
+      loadFingerprint: fakeFingerprint({}),
+      loadBotd: fakeBotd({ bot: false }),
+      userAgent: () => 'Chrome/120',
     })
 
-    const { stable_components } = await collect(sampleChallenge())
+    const collected = await collect()
 
-    // sampleChallenge()'s nonce must not have leaked into the stable half.
-    expect(JSON.stringify(stable_components)).not.toContain('nonce-abc')
+    expect(collected.user_agent).toBe('Chrome/120')
+    expect(Object.keys(collected).sort()).toEqual([
+      'botd',
+      'components',
+      'user_agent',
+    ])
+  })
+
+  it('omits user_agent when none is available', async () => {
+    const collect = createFingerprintCollector({
+      loadFingerprint: fakeFingerprint({}),
+      loadBotd: fakeBotd({ bot: false }),
+      userAgent: () => undefined,
+    })
+
+    expect('user_agent' in (await collect())).toBe(false)
   })
 })
 
 describe('createFingerprintCollector default loaders', () => {
-  it('loads the real FingerprintJS + BotD modules when no deps injected', async () => {
+  it('loads the real FingerprintJS + BotD modules and navigator.userAgent', async () => {
     // MOCK the modules to prove the DEFAULT wiring calls their `load()`.
     vi.resetModules()
-    const fpGet = vi
-      .fn()
-      .mockResolvedValue({ visitorId: 'v', components: { ua: { value: 'x' } } })
+    const fpGet = vi.fn().mockResolvedValue({
+      visitorId: 'v',
+      components: { platform: { value: 'Linux x86_64' } },
+    })
     const fpLoad = vi.fn().mockResolvedValue({ get: fpGet })
     const botdLoad = vi.fn().mockResolvedValue({
       collect: vi.fn().mockResolvedValue(undefined),
       detect: vi.fn().mockReturnValue({ bot: false }),
-      getComponents: vi.fn().mockReturnValue({ webdriver: false }),
     })
     vi.doMock('@fingerprintjs/fingerprintjs', () => ({
       default: { load: fpLoad },
@@ -145,16 +143,15 @@ describe('createFingerprintCollector default loaders', () => {
     const { createFingerprintCollector: create } = await import(
       '../../src/fingerprint'
     )
-    const { stable_components } = await create()(sampleChallenge())
+    const collected = await create()()
 
     expect(fpLoad).toHaveBeenCalledOnce()
     // BotD monitoring must be OFF so the OSS detector never phones home.
     expect(botdLoad).toHaveBeenCalledWith({ monitoring: false })
-    // `ua` is an unmapped scalar: the adapter passes it through unwrapped.
-    expect(stable_components.ua).toBe('x')
-    expect(stable_components.botd).toEqual({
-      detection: { bot: false },
-      signals: { webdriver: false },
+    expect(collected).toEqual({
+      components: { platform: 'Linux x86_64' },
+      botd: { bot: false },
+      user_agent: navigator.userAgent,
     })
 
     vi.doUnmock('@fingerprintjs/fingerprintjs')

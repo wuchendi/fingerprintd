@@ -11,18 +11,23 @@ authoritative.
 
 Enter a server base URL → **Run flow** runs `getChallenge → collect → identify`:
 
-- **Identity** — the server verdict: `visitorId`, `confidence`, `decision`
-  (`match` / `review` / `new_device`), `is_new_device`, `collision_risk`, and
-  the passive `signals` (`ua_tls_consistent`, `ip_risk`).
-- **Collected evidence** — the three lanes straight out of the SDK's `Collected`,
-  each in its own section:
-  - `stable_components` — the "who is this device" matching input.
-  - `probe` — `hex(HMAC-SHA256(key, nonce))` computed in WASM, the nonce freshness
-    proof (never a matching signal; sent only when the challenge advertises
-    `collect.challenge.verify`).
-  - `ts` — the client clock at collection.
-- **Response signature** — whether the server signed the response; supply a
-  UTF-8 signing key to verify the `x-fp-signature` tag client-side.
+- **Identity** — the server verdict: `visitor_id`, `request_id`, `confidence`,
+  `decision` (`match` / `review` / `new_device`), `is_new_device`,
+  `collision_risk`, and every risk signal (`ua_tls_consistent`, `ip_risk`,
+  `client_integrity`, `persona_coherence`, `new_device_velocity`, `automation`,
+  `template_jump`). FingerprintJS's own client-side hash is shown next to it for
+  contrast — the SDK discards it and never sends it.
+- **Server-side check-in** — the `request_id` plus copyable `curl` snippets for
+  `POST /checkin/assess` and `GET /events/{request_id}`. Both calls need the
+  server API key (`FP_API_KEY`), so your backend makes them; the playground
+  never calls them and never holds the key. The browser result is display-only.
+- **Collected evidence** — the exact `POST /identify` body, by lane:
+  - `components` — the "who is this device" matching input (closed schema).
+  - `user_agent` + `botd` — the browser user agent and BotD verdict.
+  - `ts` — the client clock when the request was sent.
+  - `integrity` — known-answer probe verdicts, a risk signal only.
+- **Check-in decision bands** — canned `allow` / `challenge` / `deny`
+  assessments, rendered offline.
 
 ## Tech Stack
 
@@ -72,13 +77,7 @@ same — install → build SDK → build web → `wrangler pages deploy`. It reu
 - **Cross-origin.** The playground fetches `/challenge` and `/identify` on the
   server origin you enter, so that server must allow this app's origin via CORS.
   The edge Worker does this via `FP_CORS_ORIGINS` (see
-  [`apps/edge/README.md`](../edge/README.md)); it also exposes the response
-  signature headers so the client can verify them. Point at another server and it
+  [`apps/edge/README.md`](../edge/README.md)). Point at another server and it
   must set its own CORS.
-- **Probe key parity.** The vendored WASM ships a **dev** probe key
-  (`test-probe-secret`). Against a deployment configured with a different
-  `FP_PROBE_KEY`, the probe will not match and a probe-enforcing server returns
-  `401` — rebuild the SDK's WASM with the server's key for real parity (see
-  [`packages/client/README.md`](../../packages/client/README.md)).
 - **Real-browser only.** Canvas/audio/WebGL collection needs a real browser;
   there is no headless in-repo e2e for this app.

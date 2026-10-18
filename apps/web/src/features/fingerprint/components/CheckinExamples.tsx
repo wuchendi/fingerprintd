@@ -4,9 +4,8 @@ import { CheckinRiskCard } from './CheckinRiskCard'
 
 /**
  * A static gallery of the three check-in decision bands (allow / challenge /
- * deny), rendered with the same {@link CheckinRiskCard} the live flow uses.
- * Educational: the live demo shows only one outcome per run and can never
- * reproduce the farming case from a single browser.
+ * deny). Educational and offline: `/checkin/assess` is a server-to-server call,
+ * and a single browser can never reproduce the farming case anyway.
  */
 export function CheckinExamples() {
   const { t } = useTranslation()
@@ -28,7 +27,7 @@ export function CheckinExamples() {
 
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
         {checkinExamples.map((example) => (
-          <div key={example.assess.visitorId} className="min-w-0 space-y-2">
+          <div key={example.assess.visitor_id} className="min-w-0 space-y-2">
             <span className="text-[0.7rem] uppercase tracking-[0.14em] text-muted-foreground">
               {t(example.captionKey)}
             </span>

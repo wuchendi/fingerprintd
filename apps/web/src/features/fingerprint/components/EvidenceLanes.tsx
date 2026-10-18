@@ -1,4 +1,4 @@
-import type { ChallengeResponse, Collected } from '@cdlab/fingerprintd'
+import type { ChallengeResponse, IdentifyRequest } from '@cdlab/fingerprintd'
 import { useTranslation } from 'react-i18next'
 import { Badge } from '@/shared/components/ui/badge'
 import {
@@ -38,12 +38,16 @@ function Lane({
 
 export function EvidenceLanes({
   challenge,
-  collected,
+  request,
 }: {
   challenge: ChallengeResponse
-  collected: Collected
+  request: IdentifyRequest
 }) {
   const { t } = useTranslation()
+  const client =
+    request.user_agent !== undefined || request.botd !== undefined
+      ? { user_agent: request.user_agent, botd: request.botd }
+      : undefined
 
   return (
     <Card>
@@ -56,39 +60,32 @@ export function EvidenceLanes({
           <span>
             {t('expires in')}: {challenge.expires_in} {t('seconds')}
           </span>
-          <span>
-            {t('targets')}: [{challenge.collect.challenge.targets.join(', ')}]
-          </span>
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
         <Lane
-          title="stable_components"
+          title="components"
           description={t('the "who is this device" matching input')}
           present
         >
-          <JsonBlock value={collected.stable_components} />
+          <JsonBlock value={request.components} />
         </Lane>
 
         <Lane
-          title="probe"
-          description={t('hex(HMAC-SHA256(key, nonce)) computed in WASM')}
-          present={collected.probe !== undefined}
+          title="user_agent + botd"
+          description={t('browser user agent and client-side BotD verdict')}
+          present={client !== undefined}
         >
-          <p className="break-all rounded-md border border-border bg-muted/40 p-3 font-mono text-xs">
-            {collected.probe}
-          </p>
+          <JsonBlock value={client} />
         </Lane>
 
         <Lane
           title="ts"
-          description={t('client clock at collection')}
-          present={collected.ts !== undefined}
+          description={t('client clock when the request was sent')}
+          present
         >
           <p className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs">
-            {collected.ts}
-            {collected.ts !== undefined &&
-              ` (${new Date(collected.ts).toISOString()})`}
+            {request.ts} ({new Date(request.ts).toISOString()})
           </p>
         </Lane>
 
@@ -97,9 +94,9 @@ export function EvidenceLanes({
           description={t(
             'known-answer probe verdicts (canvas / webgl / audio / rect) — a risk signal, never matching input',
           )}
-          present={collected.integrity !== undefined}
+          present={request.integrity !== undefined}
         >
-          <JsonBlock value={collected.integrity} />
+          <JsonBlock value={request.integrity} />
         </Lane>
       </CardContent>
     </Card>
