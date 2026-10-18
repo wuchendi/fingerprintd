@@ -445,7 +445,7 @@ mod tests {
         assert!(store.get("fresh").is_some());
         assert_eq!(store.evicted(), 1);
 
-        assert!(store.purge_older_than(10_000, 5_000).is_empty());
+        assert_eq!(store.purge_older_than(10_000, 5_000), Vec::new());
     }
 
     #[test]
