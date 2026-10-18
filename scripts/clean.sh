@@ -23,7 +23,7 @@ shopt -s nullglob
 for pattern in \
   node_modules \
   apps/*/node_modules apps/*/dist apps/*/.wrangler apps/edge/wasm \
-  packages/*/node_modules packages/*/dist packages/client/wasm; do
+  packages/*/node_modules packages/*/dist; do
   for dir in $pattern; do
     if [ -d "$ROOT/$dir" ]; then
       echo "==> rm -rf $dir"

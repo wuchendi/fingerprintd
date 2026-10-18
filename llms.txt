@@ -3,9 +3,10 @@
 `fingerprintd` is a server-authoritative device-fingerprinting service for
 anti-fraud and anti-automation. The client only collects evidence; the server
 issues a one-time challenge, fuzzy-matches the evidence against its fingerprint
-library, fuses passive network signals, and returns `visitorId` + `confidence` +
-`decision`. The identity is never computed on the client, so it cannot be forged
-or replayed.
+library, fuses passive network signals, and returns `visitor_id` + `confidence` +
+`decision` under a `request_id`. The identity is never computed on the client, so
+it cannot be forged or replayed. The customer backend reads the authoritative
+result server-to-server with `GET /events/{request_id}`.
 
 Primary docs:
 
@@ -18,51 +19,68 @@ Primary docs:
 - One compute engine (`crates/fp-core`, published on crates.io as `fingerprintd`), two deployment targets: a native Axum
   server (`crates/fingerprintd`) and a Cloudflare Worker (`apps/edge`, running
   `fp-core` compiled to WASM). A client works against either unchanged.
-- A browser SDK (`@cdlab/fingerprintd`) wraps FingerprintJS/BotD, computes
-  the nonce freshness probe in WASM, and submits — it never derives an id.
+- A pure-TypeScript browser SDK (`@cdlab/fingerprintd`) wraps FingerprintJS/BotD
+  and the known-answer integrity probes, and submits — it never derives an id.
 - A browser playground (`apps/web`) drives the full flow and visualizes what the
   client sends vs. what the server judges.
-- A config-gated risk route on the edge Worker (`apps/edge`, `POST /checkin/assess`)
-  consumes `/identify` output plus its own account/device/IP/time aggregation to
-  score check-in anti-farming — the reference example of turning fingerprintd
-  signals into an allow/challenge/deny decision without modifying the core; the
-  playground (`apps/web`) demos it.
+- A risk route on the edge Worker (`apps/edge`, `POST /checkin/assess`, Bearer
+  `FP_API_KEY`, body `{ account_id, action, request_id }`) scores a stored
+  `/identify` event plus its own account/device/IP/time aggregation for check-in
+  anti-farming — the reference example of turning fingerprintd signals into an
+  allow/challenge/deny decision without modifying the core; the playground
+  (`apps/web`) demos it.
 
 ## The flow
 
 1. `GET /challenge` — the server mints a one-time nonce (short TTL, single-use)
-   and returns it plus the collection plan.
-2. The client collects `stable_components` (canvas / webgl / fonts / audio /
-   screen / UA …, with NO nonce mixed in — this is the identity-matching input),
-   and optionally a `probe = hex(HMAC-SHA256(key, nonce))` computed in WASM (a
-   freshness proof, never a matching signal).
-3. `POST /identify { nonce, stable_components, probe?, ts? }` — the server burns
-   the nonce (replay protection), recalls candidates by blocking keys, scores them
-   with the Fellegi–Sunter model, fuses passive JA4/IP signals, and returns the
-   identity.
+   and returns `{ nonce, expires_in }`.
+2. The client collects `components` (a closed schema: canvas / webgl / fonts /
+   audio / screen / …, the identity-matching input), plus the optional
+   `user_agent`, `botd` verdict and `integrity` probe verdicts (risk signals only).
+3. `POST /identify { nonce, ts, components, user_agent?, botd?, integrity? }` —
+   the server checks `ts` against its skew window, burns the nonce (replay
+   protection), recalls candidates by blocking keys, scores them with the
+   Fellegi–Sunter model, fuses passive JA4/IP signals, and returns the result
+   with a fresh `request_id`. This browser-side response is display-only.
+4. The customer backend calls `GET /events/{request_id}` with
+   `Authorization: Bearer <FP_API_KEY>` and gates on that authoritative result.
 
 ## Endpoints
 
-Both stacks serve the same wire contract:
+Both stacks serve the same wire contract (all JSON snake_case):
 
 - `GET /health` — liveness (`200 OK`).
 - `GET /challenge` — issue a one-time nonce challenge.
-- `POST /identify` — compute `visitorId` + `confidence` + `decision`. The request
-  body is `deny_unknown_fields`: an unexpected top-level key is rejected `400`. A
-  reused/expired nonce, or a failed enforced probe/timestamp check, returns `401`.
-- `DELETE /visitor/{id}` — GDPR erasure. Gated by `admin_key` (route disabled when
-  unset); idempotent (`204` even if the visitor did not exist).
+- `POST /identify` — compute `visitor_id` + `confidence` + `decision`. The request
+  body is a closed schema: an unknown key at any level, a wrong type or malformed
+  JSON is `400` (`415` for a non-JSON content type). A reused/expired nonce, or a
+  `ts` outside the skew window, returns `401`.
+- `GET /events/{request_id}` — the stored identify body, server-to-server. Gated
+  by `api_key` / `FP_API_KEY` (route `404` when unset, `401` on a wrong bearer);
+  unknown or expired ids are `404`.
+- `DELETE /visitor/{visitor_id}` — GDPR erasure of the visitor and its events.
+  Gated by `admin_key` / `FP_ADMIN_KEY` (route `404` when unset); idempotent
+  (`204` even if the visitor did not exist).
 
-`/identify` returns:
+`/identify` (and `/events/{request_id}`) returns:
 
 ```json
 {
-  "visitorId": "string",
+  "request_id": "string",
+  "visitor_id": "string",
   "confidence": 0.0,
   "decision": "match | review | new_device",
   "is_new_device": false,
   "collision_risk": false,
-  "signals": { "ua_tls_consistent": true, "ip_risk": "low | medium | high" }
+  "signals": {
+    "ua_tls_consistent": true,
+    "ip_risk": "low | medium | high",
+    "client_integrity": "ok | noise | unavailable",
+    "persona_coherence": "consistent | mismatch | unknown",
+    "new_device_velocity": "low | medium | high",
+    "automation": "detected | not_detected | unknown",
+    "template_jump": false
+  }
 }
 ```
 
@@ -74,7 +92,7 @@ for identity trust, not `confidence` alone.
 
 ```bash
 cargo run --bin fingerprintd                                   # 127.0.0.1:8080
-FINGERPRINTD_BIND_ADDR=0.0.0.0:9000 cargo run --bin fingerprintd
+FP_BIND_ADDR=0.0.0.0:9000 cargo run --bin fingerprintd
 curl -i http://127.0.0.1:8080/health
 ```
 
@@ -85,46 +103,57 @@ Log level is `RUST_LOG` (default `info`).
 ```ts
 import { createCollector, run } from '@cdlab/fingerprintd'
 
-const { identity } = await run({
+const result = await run({
   baseUrl: 'https://fp.example.com',
-  collect: createCollector(),   // FingerprintJS + BotD + WASM probe
+  collect: createCollector(),   // FingerprintJS + BotD + integrity probes
 })
+// Display-only. Send result.request_id to your backend.
 ```
+
+`getChallenge()` and `identify()` are exported for callers that drive the two
+requests themselves. See `packages/client/README.md` for the wire format and the
+component schema.
 
 ## Configuration
 
 Layered, increasing priority: built-in defaults → `fingerprintd.toml` →
-`FINGERPRINTD_`-prefixed environment variables. Native-server keys:
+`FP_`-prefixed environment variables. Native-server keys:
 
-- `FINGERPRINTD_BIND_ADDR` (default `127.0.0.1:8080`) — listen address.
-- `FINGERPRINTD_NONCE_TTL_SECS` (default `30`) — one-time nonce lifetime.
-- `FINGERPRINTD_PROBE_KEY` (unset) — HMAC key enabling nonce-probe verification.
-- `FINGERPRINTD_RESPONSE_SIGNING_KEY` (unset) — HMAC key enabling `/identify`
-  response signatures (`x-fp-timestamp` + `x-fp-signature`).
-- `FINGERPRINTD_ENFORCE_TS_WINDOW` (default `false`) + `FINGERPRINTD_TS_SKEW_SECS`
-  (default `30`) — request timestamp window.
-- `FINGERPRINTD_ADMIN_KEY` (unset) — Bearer key gating `DELETE /visitor/{id}`.
-- `FINGERPRINTD_RETENTION_SECS` (default `0`, disabled) — evict records past this age.
-- `FINGERPRINTD_FUZZY_MAX_RECORDS` (default `1000000`) — max distinct visitors.
-- `FINGERPRINTD_FUZZY_RECORD_TTL_SECS` (default `0`, disabled) — evict unseen records.
-- `FINGERPRINTD_FUZZY_MAX_BLOCK` (default `1024`) — per-block visitor cap.
-- `FINGERPRINTD_FUZZY_MAX_FREQUENCY_VALUES` (default `1000000`) — tracked `u_i` value cap.
+- `FP_BIND_ADDR` (default `127.0.0.1:8080`) — listen address.
+- `FP_NONCE_TTL_SECS` (default `30`) — one-time nonce lifetime.
+- `FP_NONCE_MAX_LIVE` (default `1000000`) — cap on live nonces.
+- `FP_TRUST_EDGE_HEADERS` (default `false`) — trust edge-injected JA4/IP headers.
+- `FP_INTEGRITY_PENALTY_ENABLED` (default `false`) — let a `noise` integrity
+  verdict lower confidence (always surfaced).
+- `FP_TS_SKEW_SECS` (default `30`) — allowed request `ts` skew; the window is
+  always enforced.
+- `FP_FUZZY_MAX_RECORDS` (default `1000000`) — max distinct visitors.
+- `FP_FUZZY_RECORD_TTL_SECS` (default `0`, disabled) — evict unseen records.
+- `FP_FUZZY_MAX_BLOCK` (default `1024`) — per-block visitor cap.
+- `FP_FUZZY_MAX_FREQUENCY_VALUES` (default `1000000`) — tracked `u_i` value cap.
+- `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` (default `1024`) — tracked `m_i` component cap.
+- `FP_ADMIN_KEY` (unset) — Bearer key gating `DELETE /visitor/{visitor_id}`.
+- `FP_API_KEY` (unset) — Bearer key gating `GET /events/{request_id}`.
+- `FP_EVENT_TTL_SECS` (default `3600`) — stored identify event lifetime.
+- `FP_EVENT_MAX` (default `100000`) — stored identify event cap.
+- `FP_RETENTION_SECS` (default `0`, disabled) — purge records not seen for this long.
+- `FP_REQUEST_TIMEOUT_SECS` (default `10`) — per-request deadline (`408`).
+- `FP_MAX_CONCURRENT_REQUESTS` (default `1024`) — global concurrency cap.
 
-The `probe_key` / `response_signing_key` / `admin_key` controls are fail-closed and
-off by default — each activates only once its key is set. The capacity bounds apply
-to the native server only; the stateless edge is per-request. The native store is
-process-local (a restart re-mints devices); use the edge (Durable Object + D1) or an
-external store behind the `NonceStore` / `FingerprintStore` / `CandidateSource`
-traits for a persistent, stable `visitorId`.
+The `admin_key` / `api_key` controls are fail-closed and off by default — each
+endpoint activates only once its key is set. The native store is in-memory and
+process-local (a restart re-mints devices); the edge Worker persists to libSQL
+(default) or D1 and has its own configuration (`apps/edge/README.md`).
 
 ## Trust boundaries (do not misreport as vulnerabilities)
 
 - Passive signals (JA4/IP) are read server-side from the connection, never from the
-  client body, and only when the deployment trusts the edge (`trust_edge_headers`).
-- The probe and response-signing keys embedded in client WASM/JS are defense in
-  depth, not decisive; extracting them is expected. The one-time nonce and TLS are
-  the primary guarantees. An L3 adversary forging a single signal is a documented
-  limitation.
+  client body, and only when the deployment trusts the edge (`trust_edge_headers`
+  natively; Cloudflare's own `request.cf` on the edge Worker).
+- The browser-side `/identify` response is display-only by design; integrators
+  must gate on `GET /events/{request_id}`. No secret ships to the client.
+- The integrity probes, `botd` and `user_agent` are client-reported risk signals;
+  a sophisticated adversary forging a single signal is a documented limitation.
 
 ## Design
 

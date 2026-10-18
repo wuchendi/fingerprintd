@@ -1,7 +1,7 @@
 name: CI (rust)
 
 # Runs only when the Rust workspace (or its toolchain config) changes, so a
-# docs- or TS-only change no longer spins up the Rust toolchain. The `push` and
+# docs- or TS-only change does not spin up the Rust toolchain. The `push` and
 # `pull_request` triggers share one path list via a YAML anchor.
 on:
   push:

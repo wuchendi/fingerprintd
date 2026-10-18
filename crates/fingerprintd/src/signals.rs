@@ -1,4 +1,4 @@
-//! HTTP-layer adapter for the passive network-signal compute (architecture §4.2 / §4.4 / §6).
+//! HTTP-layer adapter for the passive network-signal compute (architecture §4.2).
 //!
 //! The framework-free compute — the UA-vs-TLS consistency cross-check and the
 //! IP-reputation classification — lives in [`fingerprintd::signals`] so every

@@ -1,6 +1,6 @@
 {
   "name": "@cdlab/fingerprintd-edge",
-  "version": "1.0.0",
+  "version": "0.0.2",
   "description": "Cloudflare Worker edge deployment of the fingerprintd challenge/identify flow (TS host + Rust/WASM compute).",
   "type": "module",
   "private": true,
