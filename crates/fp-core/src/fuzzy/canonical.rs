@@ -1,43 +1,14 @@
-//! Value canonicalization and blocking-key derivation for the fuzzy store
-//! (fuzzy-matching §4/§8).
+//! Blocking-key derivation for the fuzzy store (fuzzy-matching §4).
 //!
-//! These helpers turn raw JSON component values into the hashable, comparable
-//! forms the store keys on, and fold stored-component subsets into the composite
-//! blocking keys used for stage-one recall (§4).
+//! These helpers fold stored-component subsets into the composite blocking keys
+//! used for stage-one recall (§4).
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::blocking::BlockingKey;
 use super::component::Stored;
-
-/// Iterate the object's entries, or nothing if `value` is not an object.
-pub(super) fn object_entries(value: &Value) -> impl Iterator<Item = (&String, &Value)> {
-    value
-        .as_object()
-        .into_iter()
-        .flat_map(serde_json::Map::iter)
-}
-
-/// Canonicalize a scalar JSON value (string/bool/number) to a hashable string.
-pub(super) fn canonical_scalar(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
-}
-
-/// Coerce a numeric JSON value to `i64`, rounding floats.
-#[allow(clippy::cast_possible_truncation)] // fingerprint numerics (cores, memory) are small
-pub(super) fn value_to_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_f64().map(|f| f.round() as i64))
-}
 
 /// Length-prefixed digest of an ordered member group into one blocking key.
 ///

@@ -1,6 +1,6 @@
 [package]
 name        = "fp-wasm"
-description = "WebAssembly build of the fingerprintd compute core (nonce probe, blocking keys, Fellegi-Sunter scoring, response signing) for the edge Worker and browser SDK."
+description = "WebAssembly build of the fingerprintd compute core (blocking keys, Fellegi-Sunter scoring, passive and client-integrity signals) for the edge Worker."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -18,9 +18,9 @@ crate-type = ["cdylib", "rlib"]
 
 # `wasm-pack` runs `wasm-opt` on the release build with these flags. `-Oz`
 # optimizes aggressively for SIZE — behaviour-preserving, so the FUNCTIONAL drift
-# guard (edge parity + probe vector) stays the source of truth. Output is not
-# byte-reproducible across hosts, which is exactly why the guard is functional
-# rather than a byte diff. Shrinks the vendored module (~264KB → ~24KB range).
+# guard (edge parity) stays the source of truth. Output is not byte-reproducible
+# across hosts, which is exactly why the guard is functional rather than a byte
+# diff.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz"]
 
@@ -32,9 +32,6 @@ wasm-bindgen = "0.2"
 fingerprintd = { path = "../fp-core", version = "0.0.2", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
-hmac = { workspace = true }
-sha2 = { workspace = true }
-hex  = { workspace = true }
 
 # Inherit the workspace lint policy (deny-warnings, clippy pedantic),
 # but relax `unsafe_code` from `forbid` to `deny`: the `#[wasm_bindgen]` export

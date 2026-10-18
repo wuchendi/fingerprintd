@@ -15,7 +15,7 @@
 
 use std::process::ExitCode;
 
-use fingerprintd_server::fuzzy::eval::{Fixture, evaluate};
+use fingerprintd::fuzzy::eval::{Fixture, evaluate};
 
 fn main() -> ExitCode {
     let path = std::env::args().nth(1);
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
     println!("  devices:            {}", report.total_devices);
     println!("  observations:       {}", report.total_observations);
     println!("  revisits:           {}", report.revisits);
-    println!("  minted visitorIds:  {}", report.minted_ids);
+    println!("  minted visitor_ids: {}", report.minted_ids);
     println!(
         "  stability rate:     {:.3}  ({}/{} revisits re-linked)",
         report.stability_rate(),

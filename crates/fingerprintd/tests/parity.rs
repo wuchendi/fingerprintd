@@ -1,16 +1,15 @@
-//! Native half of the cross-stack parity proof.
+//! Native parity vectors for the matching engine.
 //!
-//! The native `fp-core` engine and the edge Worker (`apps/edge`: Rust→WASM
-//! compute over a Durable Object nonce + D1 candidate index) are two deployments
-//! of ONE engine. This test drives the shared vectors in
-//! `apps/edge/tests/fixtures/parity.json` through the native
-//! [`FuzzyStore::identify`] path; the edge half
-//! (`apps/edge/tests/parity.workers.test.ts`) drives the SAME fixture through
-//! the Worker. Both assert the SAME committed `expect` block, so a divergence in
-//! either stack — a changed threshold, a different salt derivation, a broken
-//! serialization boundary — fails one side against the shared reference.
+//! The native server and the edge Worker (`crates/fp-wasm` scoring over salted
+//! stored templates the host persists) are two deployments of ONE engine. This
+//! test drives the vectors in `tests/fixtures/parity.json` (closed component
+//! schema) through the native [`FuzzyStore::identify`] path and asserts the
+//! committed `expect` block; `crates/fp-wasm` drives the same fixture through
+//! the stored-form edge path. A changed threshold, a different salt derivation,
+//! or a broken serialization boundary fails against the pinned reference.
+//! Minted ids are random, so visitors are asserted by symbolic label.
 //!
-//! Both stacks are seeded from the fixture's `salt_secret`, because blocking-key
+//! The store is seeded from the fixture's `salt_secret`, because blocking-key
 //! derivation and stored hashing are only reproducible across isolates when the
 //! salt is deterministic (native production uses a per-process random salt; the
 //! parity claim is "same secret ⇒ same identity/decision/confidence").
@@ -20,16 +19,15 @@
 
 use std::collections::HashMap;
 
-use fingerprintd_server::fuzzy::FuzzyStore;
+use fingerprintd::fuzzy::{Components, FuzzyStore, IdentifyContext};
 use serde::Deserialize;
-use serde_json::{Map, Value};
 
 /// The whole fixture: shared salt, tolerance, named component objects, scenarios.
 #[derive(Debug, Deserialize)]
 struct Fixture {
     salt_secret: String,
     confidence_tolerance: f64,
-    components: Map<String, Value>,
+    components: HashMap<String, Components>,
     scenarios: Vec<Scenario>,
 }
 
@@ -47,25 +45,21 @@ struct Step {
     expect: Expect,
 }
 
-/// The parity assertion for a step — identical to the edge test's `expect`.
+/// The parity assertion for a step.
 #[derive(Debug, Deserialize)]
 struct Expect {
     decision: String,
     is_new_device: bool,
-    /// Symbolic visitor label, asserted stable across the steps that share it.
+    /// Symbolic visitor label: steps sharing a label resolve to one id, and
+    /// distinct labels to distinct ids.
     visitor: String,
-    /// Absolute derived id, pinned on the step that first mints the visitor.
-    #[serde(default)]
-    visitor_id: Option<String>,
     collision_risk: bool,
     confidence: f64,
+    template_jump: bool,
 }
 
-/// The shared fixture, in the `apps/edge` tree so one file drives both stacks.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../apps/edge/tests/fixtures/parity.json"
-);
+/// The native parity fixture.
+const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/parity.json");
 
 #[test]
 fn native_engine_matches_shared_parity_vectors() {
@@ -76,8 +70,7 @@ fn native_engine_matches_shared_parity_vectors() {
 
     for scenario in &fixture.scenarios {
         println!("=== {} ===", scenario.name);
-        // A fresh deterministic store per scenario: the edge test resets its D1 +
-        // Durable Object between scenarios the same way.
+        // A fresh deterministic store per scenario.
         let store = FuzzyStore::deterministic(secret);
         // label -> resolved id, so a `match`/`review` step must reuse the id the
         // earlier `new_device` step minted.
@@ -91,16 +84,22 @@ fn native_engine_matches_shared_parity_vectors() {
             // Timestamps only stamp record freshness; they do not affect identity,
             // decision, or confidence. Use the step index so runs are reproducible.
             let now = (i as u64 + 1) * 1000;
-            let outcome = store.identify(components, now);
+            let outcome = store.identify(&IdentifyContext {
+                components,
+                now_ms: now,
+                client_ip: None,
+            });
+            let visitor_id = outcome.visitor_id.clone().expect("identify resolves an id");
 
             println!(
-                "{}.{i} decision={} new={} vid={} conf={:.17} collision={}",
+                "{}.{i} decision={} new={} vid={} conf={:.17} collision={} jump={}",
                 scenario.name,
                 outcome.decision.as_str(),
                 outcome.is_new_device,
-                outcome.visitor_id,
+                visitor_id,
                 outcome.confidence,
                 outcome.collision_risk,
+                outcome.template_jump,
             );
 
             let e = &step.expect;
@@ -113,6 +112,10 @@ fn native_engine_matches_shared_parity_vectors() {
                 outcome.collision_risk, e.collision_risk,
                 "collision_risk @ step {i}"
             );
+            assert_eq!(
+                outcome.template_jump, e.template_jump,
+                "template_jump @ step {i}"
+            );
             assert!(
                 (outcome.confidence - e.confidence).abs() <= tol,
                 "confidence @ step {i}: got {}, expected {} (tol {tol})",
@@ -120,21 +123,22 @@ fn native_engine_matches_shared_parity_vectors() {
                 e.confidence,
             );
 
-            // Absolute id pin (present on the minting step).
-            if let Some(expected_id) = &e.visitor_id {
-                assert_eq!(&outcome.visitor_id, expected_id, "visitor_id @ step {i}");
-            }
             // Symbolic-label stability: every step tagged with the same visitor
-            // must resolve to one id.
-            match visitors.get(&e.visitor) {
-                Some(id) => assert_eq!(
-                    &outcome.visitor_id, id,
+            // resolves to one id, and a new label to an id no other label holds.
+            if let Some(id) = visitors.get(&e.visitor) {
+                assert_eq!(
+                    &visitor_id, id,
                     "visitor '{}' must be stable @ step {i}",
                     e.visitor
-                ),
-                None => {
-                    visitors.insert(e.visitor.clone(), outcome.visitor_id.clone());
-                }
+                );
+            } else {
+                assert!(
+                    !visitors.values().any(|id| *id == visitor_id),
+                    "visitor '{}' must be distinct @ step {i}",
+                    e.visitor
+                );
+                assert_eq!(visitor_id.len(), 32, "minted id @ step {i}");
+                visitors.insert(e.visitor.clone(), visitor_id);
             }
         }
     }

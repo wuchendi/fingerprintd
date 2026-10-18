@@ -1,14 +1,38 @@
 //! End-to-end behavior tests for the fuzzy-matching engine, exercising only the
-//! crate's public API (`FuzzyStore::{new, identify, identify_with_ip, score}`,
+//! crate's public API (`FuzzyStore::{new, identify, score}`, `IdentifyContext`,
 //! `Decision`, `MatchOutcome`, `VelocityBand`). The private-internal unit tests
 //! stay inline in `src/fuzzy/engine.rs`.
 
-use fingerprintd::fuzzy::{Decision, FuzzyStore, VelocityBand};
+use fingerprintd::fuzzy::{
+    Components, Decision, FuzzyStore, IdentifyContext, MatchOutcome, VelocityBand,
+};
 use serde_json::{Value, json};
 
+#[allow(clippy::expect_used)] // test-only: a malformed literal must abort loudly
+fn components(value: Value) -> Components {
+    serde_json::from_value(value).expect("schema components")
+}
+
+fn identify(store: &FuzzyStore, components: &Components, now_ms: u64) -> MatchOutcome {
+    identify_from(store, components, now_ms, None)
+}
+
+fn identify_from(
+    store: &FuzzyStore,
+    components: &Components,
+    now_ms: u64,
+    client_ip: Option<&str>,
+) -> MatchOutcome {
+    store.identify(&IdentifyContext {
+        components,
+        now_ms,
+        client_ip,
+    })
+}
+
 /// A full, high-signal probe (8 components across all three kinds).
-fn full_probe() -> Value {
-    json!({
+fn full_probe() -> Components {
+    components(json!({
         "webgl": "ANGLE (Intel)",
         "platform": "Linux x86_64",
         "timezone": "Asia/Shanghai",
@@ -16,15 +40,15 @@ fn full_probe() -> Value {
         "cpu_cores": 8,
         "device_memory": 8,
         "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"],
-        "user_agent": "Chrome/120",
-    })
+        "canvas": "c0ffee",
+    }))
 }
 
 /// A distinct full probe per index: every high-stability discriminant differs,
 /// so each recalls no prior device and is minted as a brand-new device — the
 /// fresh-seed-per-launch farm's per-session footprint.
-fn distinct_probe(i: u64) -> Value {
-    json!({
+fn distinct_probe(i: u64) -> Components {
+    components(json!({
         "webgl": format!("ANGLE (Vendor {i})"),
         "platform": format!("Platform-{i}"),
         "timezone": format!("Zone/{i}"),
@@ -35,24 +59,28 @@ fn distinct_probe(i: u64) -> Value {
             format!("F{i}a"), format!("F{i}b"), format!("F{i}c"),
             format!("F{i}d"), format!("F{i}e"),
         ],
-        "user_agent": format!("Agent/{i}"),
-    })
+        "canvas": format!("canvas-{i}"),
+    }))
 }
 
-/// (a) De-avalanche: a single browser upgrade plus one changed font must not
+/// (a) De-avalanche: a re-noised canvas plus one changed font must not
 /// mint a new device — the stable components carry the match (fuzzy-matching §5/§8).
 #[test]
 fn a_single_component_drift_stays_the_same_device() {
     let store = FuzzyStore::new();
-    let first = store.identify(&full_probe(), 1_000);
+    let first = identify(&store, &full_probe(), 1_000);
     assert!(first.is_new_device);
 
-    // Browser auto-upgraded (UA) and one font swapped: everything stable is
-    // unchanged, so the FS score clears T_hi and the id is preserved.
+    // Canvas re-noised and one font swapped: everything stable is unchanged,
+    // so the FS score clears T_hi and the id is preserved.
     let mut drifted = full_probe();
-    drifted["user_agent"] = json!("Chrome/121");
-    drifted["fonts"] = json!(["Arial", "Helvetica", "Courier", "Times", "Segoe"]);
-    let second = store.identify(&drifted, 2_000);
+    drifted.canvas = Some("beef".into());
+    drifted.fonts = Some(
+        ["Arial", "Helvetica", "Courier", "Times", "Segoe"]
+            .map(String::from)
+            .to_vec(),
+    );
+    let second = identify(&store, &drifted, 2_000);
 
     assert_eq!(second.decision, Decision::Match);
     assert!(!second.is_new_device);
@@ -71,12 +99,18 @@ fn a_single_component_drift_stays_the_same_device() {
 fn d_missing_components_neither_collide_nor_inflate_confidence() {
     // A null canvas must not link two otherwise-distinct privacy devices.
     let privacy = FuzzyStore::new();
-    let a = privacy.identify(
-        &json!({ "webgl": "GPU-A", "platform": "Linux", "timezone": "UTC", "canvas": null }),
+    let a = identify(
+        &privacy,
+        &components(
+            json!({ "webgl": "GPU-A", "platform": "Linux", "timezone": "UTC", "canvas": null }),
+        ),
         1_000,
     );
-    let b = privacy.identify(
-        &json!({ "webgl": "GPU-B", "platform": "Windows", "timezone": "GMT", "canvas": null }),
+    let b = identify(
+        &privacy,
+        &components(
+            json!({ "webgl": "GPU-B", "platform": "Windows", "timezone": "GMT", "canvas": null }),
+        ),
         2_000,
     );
     assert!(a.is_new_device && b.is_new_device);
@@ -85,17 +119,17 @@ fn d_missing_components_neither_collide_nor_inflate_confidence() {
     // Completeness: a full match is more confident than a match resting on
     // only a few components.
     let store = FuzzyStore::new();
-    store.identify(&full_probe(), 1_000);
-    let full = store.identify(&full_probe(), 2_000);
+    identify(&store, &full_probe(), 1_000);
+    let full = identify(&store, &full_probe(), 2_000);
     assert_eq!(full.decision, Decision::Match);
 
     // A sparse probe carrying only three of the stable components.
-    let sparse = json!({
+    let sparse = components(json!({
         "webgl": "ANGLE (Intel)",
         "platform": "Linux x86_64",
         "timezone": "Asia/Shanghai",
-    });
-    let partial = store.identify(&sparse, 3_000);
+    }));
+    let partial = identify(&store, &sparse, 3_000);
     assert!(partial.compared_components < full.compared_components);
     assert!(
         partial.confidence < full.confidence,
@@ -105,14 +139,14 @@ fn d_missing_components_neither_collide_nor_inflate_confidence() {
     );
 }
 
-/// (RT-001) Fresh-seed-per-launch farming footprint — pinned regression
+/// Fresh-seed-per-launch farming footprint — pinned regression
 /// baseline. The `CloakBrowser` adversary re-seeds its fingerprint on every
 /// launch, so successive sessions present fully distinct high-stability
 /// components (webgl/platform/timezone/…). Each one lands in its own blocking
 /// keys, recalls no prior device, and is minted as a brand-new device. That is
 /// exactly the footprint of an account farm — many "new devices" in quick
 /// succession — and it is invisible to this per-session engine by design. The
-/// cross-session velocity signal (RT-003) is what catches this pattern; this
+/// cross-session velocity signal is what catches this pattern; this
 /// test documents the current per-session behaviour so the gap is a visible
 /// baseline, not folklore.
 #[test]
@@ -124,7 +158,7 @@ fn fresh_seed_per_launch_each_mints_a_new_device() {
     // fingerprint: every high-stability discriminant differs, so the blocking
     // keys are disjoint and no launch recalls another.
     let launches = [
-        json!({
+        components(json!({
             "webgl": "ANGLE (NVIDIA GeForce RTX 3060)",
             "platform": "Win32",
             "timezone": "America/Chicago",
@@ -132,9 +166,8 @@ fn fresh_seed_per_launch_each_mints_a_new_device() {
             "cpu_cores": 12,
             "device_memory": 16,
             "fonts": ["Arial", "Calibri", "Segoe UI", "Tahoma"],
-            "user_agent": "Chrome/126",
-        }),
-        json!({
+        })),
+        components(json!({
             "webgl": "ANGLE (AMD Radeon RX 6800)",
             "platform": "MacIntel",
             "timezone": "Europe/Berlin",
@@ -142,9 +175,8 @@ fn fresh_seed_per_launch_each_mints_a_new_device() {
             "cpu_cores": 8,
             "device_memory": 8,
             "fonts": ["Helvetica", "SF Pro", "Menlo", "Geneva"],
-            "user_agent": "Chrome/126",
-        }),
-        json!({
+        })),
+        components(json!({
             "webgl": "ANGLE (Intel Iris Xe)",
             "platform": "Linux x86_64",
             "timezone": "Asia/Tokyo",
@@ -152,13 +184,12 @@ fn fresh_seed_per_launch_each_mints_a_new_device() {
             "cpu_cores": 4,
             "device_memory": 4,
             "fonts": ["Roboto", "Noto Sans", "Ubuntu", "DejaVu Sans"],
-            "user_agent": "Chrome/126",
-        }),
+        })),
     ];
 
     let mut ids = HashSet::new();
     for (i, probe) in launches.iter().enumerate() {
-        let out = store.identify(probe, 1_000 + i as u64 * 1_000);
+        let out = identify(&store, probe, 1_000 + i as u64 * 1_000);
         assert_eq!(out.decision, Decision::NewDevice, "launch {i}");
         assert!(out.is_new_device, "launch {i} should mint a new device");
         assert!(
@@ -171,67 +202,58 @@ fn fresh_seed_per_launch_each_mints_a_new_device() {
 }
 
 /// A `None` client IP is neutral: no event is recorded, the band stays
-/// [`VelocityBand::Low`], and the outcome equals the plain `identify` path.
+/// [`VelocityBand::Low`].
 #[test]
 fn no_client_ip_stays_low_and_neutral() {
     let store = FuzzyStore::new();
     let probe = distinct_probe(1);
-    let out = store.identify_with_ip(&probe, 1_000_000, None);
+    let out = identify_from(&store, &probe, 1_000_000, None);
     assert_eq!(out.new_device_velocity, VelocityBand::Low);
     assert!((out.confidence - 0.5).abs() < 1e-9);
 
     // A brand-new IP that later mints a single device is Low (below MEDIUM).
     let other = distinct_probe(2);
-    let banded = store.identify_with_ip(&other, 1_000_100, Some("198.51.100.7"));
+    let banded = identify_from(&store, &other, 1_000_100, Some("198.51.100.7"));
     assert_eq!(banded.new_device_velocity, VelocityBand::Low);
 }
 
-/// Cold-start invariance: on a fresh store, the first `identify` is unchanged
-/// for every field that existed before RT-003 (decision / visitorId /
-/// `is_new_device`), and the new band defaults to [`VelocityBand::Low`] — so an
-/// empty velocity store is bit-identical to today and the delegating `identify`
-/// matches an explicit no-IP `identify_with_ip`.
+/// Cold-start invariance: on a fresh store, the first `identify` is a
+/// `NewDevice` whose velocity band defaults to [`VelocityBand::Low`] — an empty
+/// velocity store is neutral — with or without a client IP.
 #[test]
-fn cold_start_is_neutral_and_identify_delegates_to_no_ip() {
+fn cold_start_is_neutral() {
     let probe = full_probe();
 
-    let via_identify = FuzzyStore::new().identify(&probe, 1_000);
-    let via_no_ip = FuzzyStore::new().identify_with_ip(&probe, 1_000, None);
+    let no_ip = identify(&FuzzyStore::new(), &probe, 1_000);
+    let with_ip = identify_from(&FuzzyStore::new(), &probe, 1_000, Some("198.51.100.7"));
 
-    assert_eq!(via_identify.decision, Decision::NewDevice);
-    assert_eq!(via_identify.new_device_velocity, VelocityBand::Low);
-    // The two paths agree on the pre-existing identity fields and confidence.
-    assert_eq!(via_identify.decision, via_no_ip.decision);
-    assert_eq!(via_identify.visitor_id, via_no_ip.visitor_id);
-    assert_eq!(via_identify.is_new_device, via_no_ip.is_new_device);
-    assert!((via_identify.confidence - via_no_ip.confidence).abs() < f64::EPSILON);
+    for out in [&no_ip, &with_ip] {
+        assert_eq!(out.decision, Decision::NewDevice);
+        assert!(out.is_new_device);
+        assert_eq!(out.new_device_velocity, VelocityBand::Low);
+    }
+    assert!((no_ip.confidence - with_ip.confidence).abs() < f64::EPSILON);
 }
 
 /// A realistic SDK-shaped phone payload (real Android Chrome value shapes):
 /// `n` varies every device-distinctive component (GPU, canvas, audio, the
 /// hashed `FingerprintJS` objects, screen), while the low-entropy values every
-/// phone in one city shares stay identical — booleans, colour depth, locale,
-/// timezone, cores, memory, the constant Android font probe, no plugins.
-fn phone(n: u64) -> Value {
+/// phone in one city shares stay identical — locale,
+/// timezone, platform, cores, memory, the constant Android font probe, no
+/// plugins.
+fn phone(n: u64) -> Components {
     let h = |tag: &str| format!("{tag}{n:0>31}");
-    json!({
-        "userAgentData": h("u"), "fontPreferences": h("f"), "screenFrame": h("s"),
+    components(json!({
+        "user_agent_data": h("u"), "font_preferences": h("f"), "screen_frame": h("s"),
         "math": h("m"), "canvas": h("c"), "webgl_extensions": h("x"),
-        "touchSupport": h("t"), "domBlockers": h("d"),
+        "touch_support": h("t"), "dom_blockers": h("d"),
         "webgl": format!("Google Inc. (Vendor {})|ANGLE (GPU {n})", n % 7),
         "audio": format!("124.{n}"),
         "screen": format!("{}x{}", 800 + n % 50, 380 + n % 20),
-        "colorDepth": 24, "sessionStorage": true, "localStorage": true,
-        "indexedDB": true, "openDatabase": false, "vendor": "Google Inc.",
-        "vendorFlavors": "chrome", "cookiesEnabled": true, "colorGamut": "srgb",
-        "forcedColors": false, "monochrome": 0, "contrast": 0,
-        "reducedMotion": false, "reducedTransparency": false, "hdr": false,
-        "pdfViewerEnabled": false, "architecture": 127, "applePay": -1,
-        "audioBaseLatency": 0.003, "dateTimeLocale": "zh-CN",
         "languages": "zh-CN", "timezone": "Asia/Shanghai",
         "platform": "Linux armv81", "cpu_cores": 8, "device_memory": 8,
         "fonts": ["sans-serif-thin"], "plugins": [],
-    })
+    }))
 }
 
 /// A device that shares only the city-wide common values with the library must
@@ -244,11 +266,11 @@ fn stranger_sharing_only_common_values_is_new_device_at_any_library_size() {
         for n in 0..size {
             store.observe(&format!("p{n}"), &phone(n), 1_000);
         }
-        let out = store.identify(&phone(1_000_000), 2_000);
+        let out = identify(&store, &phone(1_000_000), 2_000);
         assert_eq!(
             out.decision,
             Decision::NewDevice,
-            "library of {size}: stranger scored {:?} against {}",
+            "library of {size}: stranger scored {:?} against {:?}",
             out.score,
             out.visitor_id
         );
@@ -264,8 +286,8 @@ fn same_phone_revisit_matches_at_any_library_size() {
         for n in 0..size {
             store.observe(&format!("p{n}"), &phone(n), 1_000);
         }
-        let first = store.identify(&phone(1_000_000), 2_000);
-        let again = store.identify(&phone(1_000_000), 3_000);
+        let first = identify(&store, &phone(1_000_000), 2_000);
+        let again = identify(&store, &phone(1_000_000), 3_000);
         assert_eq!(
             again.decision,
             Decision::Match,

@@ -8,34 +8,9 @@
 //! has its own denominator, so a value shared by every device reads as common
 //! rather than diluted by the number of components.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Mutex, PoisonError,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::collections::HashMap;
 
 use super::component::Hash32;
-
-/// Storage contract for the per-component frequency material behind `u_i` estimation
-/// (fuzzy-matching §9/§11).
-///
-/// The in-memory [`FrequencyTable`] is the single-instance implementation. An
-/// externalized backend (a shared counter store, a later step) lives behind the
-/// same contract, so the engine records sightings and reads counts without
-/// knowing where the frequency material is kept. Only the raw counting surface
-/// is exposed here; the smoothed `u_i` estimate lives in the scorer.
-pub trait FrequencyStore: Send + Sync {
-    /// Record one sighting of `value` for `component`.
-    fn record(&self, component: &str, value: Hash32);
-
-    /// Sightings recorded for `value` under `component`.
-    fn count(&self, component: &str, value: Hash32) -> u64;
-
-    /// Sightings recorded for `component` (its frequency denominator).
-    fn total(&self, component: &str) -> u64;
-}
 
 /// `(component, value hash) → count`, with a running total per component, for
 /// `u_i` estimation (fuzzy-matching §9).
@@ -51,20 +26,14 @@ pub trait FrequencyStore: Send + Sync {
 /// drop is counted via [`FrequencyTable::dropped`], never silent.
 #[derive(Debug, Default)]
 pub struct FrequencyTable {
-    counts: Mutex<Counts>,
-    /// Cap on distinct tracked values; `None` is unbounded.
-    max_values: Option<usize>,
-    /// Count of new values dropped at the distinct-value cap (not silent).
-    dropped: AtomicU64,
-}
-
-/// Inner counter state guarded by the table's mutex.
-#[derive(Debug, Default)]
-struct Counts {
     /// Sightings per `(component, salted value hash)`.
     per_value: HashMap<(String, Hash32), u64>,
     /// Sightings per component.
     totals: HashMap<String, u64>,
+    /// Cap on distinct tracked values; `None` is unbounded.
+    max_values: Option<usize>,
+    /// Count of new values dropped at the distinct-value cap (not silent).
+    dropped: u64,
 }
 
 impl FrequencyTable {
@@ -80,9 +49,8 @@ impl FrequencyTable {
     /// `None` is unbounded.
     pub fn with_capacity(max_frequency_values: Option<usize>) -> Self {
         Self {
-            counts: Mutex::new(Counts::default()),
             max_values: max_frequency_values,
-            dropped: AtomicU64::new(0),
+            ..Self::default()
         }
     }
 
@@ -92,32 +60,29 @@ impl FrequencyTable {
     /// tracked unless the distinct-value cap is reached, in which case it is
     /// dropped (not inserted, not counted toward the component total) and
     /// tallied in [`FrequencyTable::dropped`].
-    pub fn record(&self, component: &str, value: Hash32) {
-        let mut counts = self.lock();
+    pub fn record(&mut self, component: &str, value: Hash32) {
         let key = (component.to_owned(), value);
-        if let Some(existing) = counts.per_value.get_mut(&key) {
+        if let Some(existing) = self.per_value.get_mut(&key) {
             *existing += 1;
         } else if let Some(cap) = self.max_values
-            && counts.per_value.len() >= cap
+            && self.per_value.len() >= cap
         {
-            drop(counts);
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.dropped += 1;
             return;
         } else {
-            counts.per_value.insert(key, 1);
+            self.per_value.insert(key, 1);
         }
-        *counts.totals.entry(component.to_owned()).or_insert(0) += 1;
+        *self.totals.entry(component.to_owned()).or_insert(0) += 1;
     }
 
     /// Total new values dropped at the distinct-value cap so far.
     pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.dropped
     }
 
     /// Sightings recorded for `value` under `component`.
     pub fn count(&self, component: &str, value: Hash32) -> u64 {
-        self.lock()
-            .per_value
+        self.per_value
             .get(&(component.to_owned(), value))
             .copied()
             .unwrap_or(0)
@@ -125,26 +90,7 @@ impl FrequencyTable {
 
     /// Sightings recorded for `component` (its frequency denominator).
     pub fn total(&self, component: &str) -> u64 {
-        self.lock().totals.get(component).copied().unwrap_or(0)
-    }
-
-    /// Lock the counter, recovering the guard if a prior holder panicked.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Counts> {
-        self.counts.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl FrequencyStore for FrequencyTable {
-    fn record(&self, component: &str, value: Hash32) {
-        FrequencyTable::record(self, component, value);
-    }
-
-    fn count(&self, component: &str, value: Hash32) -> u64 {
-        FrequencyTable::count(self, component, value)
-    }
-
-    fn total(&self, component: &str) -> u64 {
-        FrequencyTable::total(self, component)
+        self.totals.get(component).copied().unwrap_or(0)
     }
 }
 
@@ -156,18 +102,18 @@ mod tests {
     #[test]
     fn counts_and_totals_track_sightings_per_component() {
         let salt = Salt::random();
-        let table = FrequencyTable::new();
+        let mut table = FrequencyTable::new();
         let common = salt.hash("Chrome/Windows");
         let rare = salt.hash("Lynx/Plan9");
 
-        table.record("ua", common);
-        table.record("ua", common);
-        table.record("ua", common);
-        table.record("ua", rare);
+        table.record("canvas", common);
+        table.record("canvas", common);
+        table.record("canvas", common);
+        table.record("canvas", rare);
 
-        assert_eq!(table.count("ua", common), 3);
-        assert_eq!(table.count("ua", rare), 1);
-        assert_eq!(table.total("ua"), 4);
+        assert_eq!(table.count("canvas", common), 3);
+        assert_eq!(table.count("canvas", rare), 1);
+        assert_eq!(table.total("canvas"), 4);
         assert_eq!(table.total("other"), 0);
     }
 
@@ -176,7 +122,7 @@ mod tests {
         // `true` is the value of many boolean components; each must keep its
         // own count and denominator so a universal value reads as universal.
         let salt = Salt::random();
-        let table = FrequencyTable::new();
+        let mut table = FrequencyTable::new();
         let yes = salt.hash("true");
         for _ in 0..4 {
             table.record("sessionStorage", yes);
@@ -193,7 +139,7 @@ mod tests {
         let salt = Salt::random();
         // Cap of 2 distinct pairs. Record two values (fills the cap), then a
         // third distinct value that overflows, and re-record a tracked one.
-        let table = FrequencyTable::with_capacity(Some(2));
+        let mut table = FrequencyTable::with_capacity(Some(2));
         let a = salt.hash("a");
         let b = salt.hash("b");
         let c = salt.hash("c");

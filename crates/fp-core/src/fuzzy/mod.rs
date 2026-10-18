@@ -1,28 +1,41 @@
-//! In-memory storage layer for the weighted fuzzy-matching engine
-//! (DESIGN.md fuzzy-matching §3/§4/§9/§11).
+//! The weighted fuzzy-matching engine (DESIGN.md fuzzy-matching §3–§11).
 //!
-//! This is the storage substrate only — it holds the data model, the blocking
-//! indexes for candidate generation, and the frequency material for parameter
-//! estimation. It is deliberately **additive**: the P0 `/identify` exact-match
-//! path is untouched, and the two-stage scoring/judgment (fuzzy-matching §5) is out of
-//! scope here.
+//! It resolves a raw component observation to a `visitor_id` in two stages:
+//! stage one recalls candidates from blocking indexes (§4), stage two scores
+//! each candidate with the Fellegi–Sunter model and applies the double-threshold
+//! decision, template drift, and confidence fusion (§5–§8, in [`engine`]).
 //!
 //! Pieces, mapped to the fuzzy-matching spec's data-structure table (§11):
-//! - [`component`] — salted, compliance-preserving stored representations (§3)
-//!   and the cold-start stability priors (§2/§9).
-//! - [`frequency`] — `value hash → count`, the material for `u_i` (§9).
-//! - [`blocking`] — the `key → set<visitorId>` inverted index (§4).
+//! - [`component`] — the closed component schema with its stability and
+//!   rarity priors (§2/§9), and the salted, compliance-preserving stored
+//!   representations (§3).
+//! - [`components`] — the typed [`Components`] payload every entry point takes.
+//! - [`frequency`] — per-component `value hash → count`, the material for `u_i` (§9).
+//! - [`agreement`] — per-component same-device agreement counts, the material
+//!   for `m_i` (§9).
+//! - [`blocking`] — the `key → set<visitor_id>` inverted index (§4).
 //! - [`minhash`] — `MinHash`-`LSH` band keys for set components (§4 K3).
-//! - [`record`] — the `visitorId → template` fingerprint library (§3).
+//! - [`record`] — the `visitor_id → template` fingerprint library (§3).
+//! - [`velocity`] — per-IP distinct new-device counts behind the cross-session
+//!   velocity band.
+//! - [`engine`] — scoring, decision, drift, and confidence.
 //!
-//! [`FuzzyStore`] wires them together: [`FuzzyStore::observe`] folds a raw
-//! component observation into every index, and [`FuzzyStore::candidates`]
-//! performs stage-one recall.
+//! [`FuzzyStore`] wires them together: [`FuzzyStore::identify`] scores and
+//! persists an observation, [`FuzzyStore::score`] scores without mutating, [`FuzzyStore::observe`] folds
+//! an observation into every index, and [`FuzzyStore::candidates`] performs
+//! stage-one recall.
+//!
+//! A stateless host keeps only the salted [`StoredComponents`] wire form:
+//! [`FuzzyStore::stored_form`] produces it, [`FuzzyStore::blocking_key_hexes_stored`]
+//! derives its index keys, [`FuzzyStore::observe_stored`] loads recalled
+//! templates into a transient store for [`FuzzyStore::score`], and
+//! [`StoredComponents::merged`] drifts a template exactly as `observe` does.
 
 pub mod agreement;
 pub mod blocking;
 mod canonical;
 pub mod component;
+pub mod components;
 pub mod engine;
 // The offline evaluation harness replays fixtures through a random-salt store; it
 // is a native tuning tool, not edge compute, so the WASM build omits it.
@@ -33,46 +46,41 @@ pub mod minhash;
 pub mod record;
 pub mod velocity;
 
-pub use agreement::AgreementStore;
-pub use blocking::CandidateSource;
-pub use component::{FieldSpec, Kind, classify};
-pub use engine::{Decision, MatchOutcome};
-pub use frequency::FrequencyStore;
-pub use record::FingerprintStore;
-pub use velocity::{VelocityBand, VelocityStore};
+pub use component::{COMPONENT_KEYS, Component, Kind, Stability, Stored, StoredComponents};
+pub use components::{ComponentValue, Components};
+pub use engine::{
+    Decision, IdentifyContext, MatchOutcome, TEMPLATE_JUMP_MAX_HIGH_CHANGES, is_template_jump,
+};
+pub use velocity::{VELOCITY_PENALTY, VelocityBand, velocity_penalty};
 
 use std::{
-    collections::{BTreeMap, HashSet},
-    fmt,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
-
-use serde_json::Value;
 
 use self::{
     agreement::AgreementTable,
     blocking::{BlockingIndex, BlockingKey, DEFAULT_MAX_BLOCK},
-    canonical::{all_scalar_key, canonical_scalar, group_key, object_entries, value_to_i64},
-    component::{Salt, Stored, set_digest},
+    canonical::{all_scalar_key, group_key},
+    component::{Salt, set_digest},
     frequency::FrequencyTable,
     minhash::MinHashLsh,
-    record::{FingerprintRecord, RecordStore},
+    record::{FingerprintRecord, RecordStore, Tombstones},
     velocity::VelocityTable,
 };
 
-/// Capacity / TTL bounds for the in-memory fuzzy backends.
+/// Capacity / TTL bounds for the in-memory fuzzy store.
 ///
 /// The in-memory store grows with every distinct visitor and value; left
 /// unbounded that is an availability risk. This policy caps that growth with
-/// **fail-safe** defaults: the [`Default`] bounds are generous, so a fresh
-/// small workload behaves byte-for-byte as before — only unbounded growth is
-/// added. `None` on an optional field means "unbounded".
+/// **fail-safe** defaults: the [`Default`] bounds are generous, so a small
+/// workload never hits them. `None` on an optional field means "unbounded".
 ///
-/// The bounds are enforced by the concrete backends ([`RecordStore`],
-/// [`FrequencyTable`], [`BlockingIndex`]) and every eviction/drop is counted
-/// (never silent), matching the blocking `dropped()` precedent (fuzzy-matching §4).
-/// Applies to a stateful native store built by [`FuzzyStore::new_with_policy`];
-/// the stateless edge store ([`FuzzyStore::deterministic`]) is per-request and
-/// needs no eviction, so it stays unbounded.
+/// Every eviction/drop is counted (never silent), matching the blocking
+/// `dropped()` precedent (fuzzy-matching §4). Applies to a stateful native
+/// store built by [`FuzzyStore::new_with_policy`]; the stateless edge store
+/// ([`FuzzyStore::deterministic`]) is per-request and needs no eviction, so it
+/// stays unbounded.
 #[derive(Debug, Clone, Copy)]
 pub struct EvictionPolicy {
     /// Retain at most this many visitors in the record library; `None` is
@@ -110,53 +118,59 @@ impl Default for EvictionPolicy {
     }
 }
 
-/// Aggregate store tying the record library, blocking indexes, and frequency
-/// table together behind one observe/candidates surface.
+/// The mutable matching state, guarded as one unit by [`FuzzyStore`]'s lock.
+#[derive(Debug, Default)]
+struct State {
+    /// The `visitor_id → template` fingerprint library (§3).
+    records: RecordStore,
+    /// The `key → set<visitor_id>` blocking inverted index (§4).
+    blocking: BlockingIndex,
+    /// Per-value frequency material for `u_i` estimation (§9).
+    frequency: FrequencyTable,
+    /// Per-component same-device agreement material for `m_i` estimation (§9).
+    agreement: AgreementTable,
+    /// Per-IP distinct new-device ids behind the cross-session velocity signal.
+    /// Only `identify` (behind the `rng` feature) reads it.
+    #[cfg_attr(not(feature = "rng"), allow(dead_code))]
+    velocity: VelocityTable,
+    /// Erased visitor ids, never minted or written back again.
+    tombstones: Tombstones,
+    /// Bumped by every write, so an identify can tell whether the state it
+    /// scored against changed before its write-back.
+    generation: u64,
+}
+
+impl State {
+    /// Mark the state as changed.
+    fn bump(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Drop `visitor`'s membership from every block it is indexed under.
+    fn unindex(&mut self, visitor: &str, record: &FingerprintRecord) {
+        for key in &record.keys {
+            self.blocking.remove(key, visitor);
+        }
+    }
+}
+
+/// The in-memory matching store: record library, blocking index, and the
+/// frequency / agreement / velocity material behind one observe/identify
+/// surface.
 ///
-/// The three storage backends are held as trait objects so each is injectable
-/// (see [`FuzzyStore::from_backends`]); the in-memory implementations remain the
-/// default and only shipped backend. The salt and `MinHash`-`LSH` family stay
-/// concrete: they are deterministic key-derivation, not swappable storage.
+/// All mutable state sits behind one [`RwLock`]: recall and scoring run under
+/// a shared read guard (borrowing candidate templates in place), and every
+/// write — observe, erase, purge, and the identify write-back — takes the
+/// exclusive guard only for the write itself. The salt and `MinHash`-`LSH`
+/// family are immutable key-derivation inputs and live outside the lock.
+#[derive(Debug)]
 pub struct FuzzyStore {
     /// Per-instance salt applied to every stored value.
     salt: Salt,
-    /// The `visitorId → template` fingerprint library (§3).
-    records: Box<dyn FingerprintStore>,
-    /// The `key → set<visitorId>` blocking inverted index (§4).
-    blocking: Box<dyn CandidateSource>,
     /// `MinHash`-`LSH` band-key generator for set components (§4 K3).
     minhash: MinHashLsh,
-    /// Per-value frequency material for `u_i` estimation (§9).
-    frequency: Box<dyn FrequencyStore>,
-    /// Per-component agreement material for `m_i` estimation (§9): how often each
-    /// component's stored value agreed across confirmed same-device revisits.
-    agreement: Box<dyn AgreementStore>,
-    /// Per-key new-device event material for the cross-session velocity signal:
-    /// how many new devices each client IP produced within the trailing window.
-    velocity: Box<dyn VelocityStore>,
-    /// Serializes the [`FuzzyStore::identify`] read-modify-write so its
-    /// evaluate-then-observe critical section is atomic.
-    ///
-    /// Each backend guards only its own `Mutex`, so without this the recall +
-    /// per-candidate reads (`evaluate`) and the frequency/blocking/record writes
-    /// (`observe`) of one `identify` are not one atomic step: a concurrent
-    /// `identify`'s `observe` could interleave between them and perturb the
-    /// scores non-deterministically. This `()`-guard makes the whole RMW a
-    /// single critical section. It is deliberately **not** taken by the
-    /// read-only [`FuzzyStore::score`] path, which performs no `observe` and must
-    /// stay lock-light for the stateless edge host.
-    identify_lock: std::sync::Mutex<()>,
-}
-
-impl fmt::Debug for FuzzyStore {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The backends are trait objects (not `Debug`); expose the concrete,
-        // deterministic key-derivation state and elide the storage internals.
-        f.debug_struct("FuzzyStore")
-            .field("salt", &self.salt)
-            .field("minhash", &self.minhash)
-            .finish_non_exhaustive()
-    }
+    /// The mutable matching state.
+    state: RwLock<State>,
 }
 
 #[cfg(feature = "rng")]
@@ -174,8 +188,8 @@ impl FuzzyStore {
         Self::new_with_policy(EvictionPolicy::default())
     }
 
-    /// Build an empty store (random salt) whose in-memory backends enforce the
-    /// given capacity / TTL [`EvictionPolicy`].
+    /// Build an empty store (random salt) that enforces the given capacity /
+    /// TTL [`EvictionPolicy`].
     ///
     /// [`FuzzyStore::new`] delegates here with the default (generous) policy, so
     /// a fresh small workload is unaffected while growth is bounded. The
@@ -185,18 +199,16 @@ impl FuzzyStore {
     pub fn new_with_policy(policy: EvictionPolicy) -> Self {
         Self {
             salt: Salt::random(),
-            records: Box::new(RecordStore::with_capacity(
-                policy.max_records,
-                policy.record_ttl_ms,
-            )),
-            blocking: Box::new(BlockingIndex::with_max_block(policy.max_block)),
             minhash: MinHashLsh::new(),
-            frequency: Box::new(FrequencyTable::with_capacity(policy.max_frequency_values)),
-            agreement: Box::new(AgreementTable::with_capacity(
-                policy.max_agreement_components,
-            )),
-            velocity: Box::new(VelocityTable::with_capacity(policy.max_velocity_keys)),
-            identify_lock: std::sync::Mutex::new(()),
+            state: RwLock::new(State {
+                records: RecordStore::with_capacity(policy.max_records, policy.record_ttl_ms),
+                blocking: BlockingIndex::with_max_block(policy.max_block),
+                frequency: FrequencyTable::with_capacity(policy.max_frequency_values),
+                agreement: AgreementTable::with_capacity(policy.max_agreement_components),
+                velocity: VelocityTable::with_capacity(policy.max_velocity_keys),
+                tombstones: Tombstones::default(),
+                generation: 0,
+            }),
         }
     }
 
@@ -210,66 +222,63 @@ impl FuzzyStore {
     pub fn deterministic(secret: &[u8]) -> Self {
         Self {
             salt: Salt::from_secret(secret),
-            records: Box::new(RecordStore::new()),
-            blocking: Box::new(BlockingIndex::new()),
             minhash: MinHashLsh::from_seed(secret),
-            frequency: Box::new(FrequencyTable::new()),
-            agreement: Box::new(AgreementTable::new()),
-            velocity: Box::new(VelocityTable::new()),
-            identify_lock: std::sync::Mutex::new(()),
+            state: RwLock::new(State::default()),
         }
     }
 
-    /// Assemble a store from explicitly supplied backends — the injection seam.
-    ///
-    /// [`FuzzyStore::new`] and [`FuzzyStore::deterministic`] wire the in-memory
-    /// defaults ([`RecordStore`], [`BlockingIndex`], [`FrequencyTable`],
-    /// [`AgreementTable`]), which remain the only shipped backend. This
-    /// constructor lets a caller swap any of the five storage backends for an
-    /// alternate implementation of [`FingerprintStore`] / [`CandidateSource`] /
-    /// [`FrequencyStore`] / [`AgreementStore`] / [`VelocityStore`] (an externalized
-    /// index, a test double) while keeping the same salt and `MinHash` family so
-    /// key derivation is unchanged.
-    pub fn from_backends(
-        salt: Salt,
-        minhash: MinHashLsh,
-        records: Box<dyn FingerprintStore>,
-        blocking: Box<dyn CandidateSource>,
-        frequency: Box<dyn FrequencyStore>,
-        agreement: Box<dyn AgreementStore>,
-        velocity: Box<dyn VelocityStore>,
-    ) -> Self {
-        Self {
-            salt,
-            records,
-            blocking,
-            minhash,
-            frequency,
-            agreement,
-            velocity,
-            identify_lock: std::sync::Mutex::new(()),
-        }
+    /// Shared access to the matching state, recovering from poisoning (every
+    /// write leaves the state consistent before it can panic out).
+    fn read(&self) -> RwLockReadGuard<'_, State> {
+        self.state.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Fold a raw component observation for `visitor` into every index.
+    /// Exclusive access to the matching state, recovering from poisoning.
+    fn write(&self) -> RwLockWriteGuard<'_, State> {
+        self.state.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Fold a component observation for `visitor` into every index.
     ///
-    /// Converts each recognized component to its stored form (updating the
-    /// frequency table for scalar values), upserts the visitor's template with
-    /// `now_ms` (Unix milliseconds), and inserts the derived blocking keys.
-    /// Returns `true` when the visitor was newly recorded.
-    pub fn observe(&self, visitor: &str, components: &Value, now_ms: u64) -> bool {
+    /// Converts each present component to its stored form (updating the
+    /// frequency table), upserts the visitor's template with `now_ms` (Unix
+    /// milliseconds), enforces the record cap / TTL, and resyncs the visitor's
+    /// blocking memberships to the keys of its merged template. Returns `true`
+    /// when the visitor was newly recorded. An erased (tombstoned) visitor is
+    /// never re-recorded: the call is a no-op returning `false`.
+    pub fn observe(&self, visitor: &str, components: &Components, now_ms: u64) -> bool {
         let stored = self.stored_map(components);
+        self.observe_locked(&mut self.write(), visitor, stored, now_ms)
+    }
+
+    /// [`FuzzyStore::observe`] for an observation already in its salted stored
+    /// form — how a stateless host loads the candidate templates it persisted
+    /// (and recalled) into a transient store before [`FuzzyStore::score`].
+    /// `stored` must have been produced under this store's salt.
+    pub fn observe_stored(&self, visitor: &str, stored: StoredComponents, now_ms: u64) -> bool {
+        self.observe_locked(&mut self.write(), visitor, stored.into_map(), now_ms)
+    }
+
+    /// [`FuzzyStore::observe`] against an already-held write guard.
+    fn observe_locked(
+        &self,
+        state: &mut State,
+        visitor: &str,
+        stored: BTreeMap<String, Stored>,
+        now_ms: u64,
+    ) -> bool {
+        if state.tombstones.contains(visitor) {
+            return false;
+        }
+        state.bump();
         // Every stored value feeds its component's frequency material for
         // `u_i` (§9); a set is counted as a whole via its digest. Frequency
         // counts DEVICES, not visits: a revisit only counts the components
         // whose value changed, or a device's own values would read as common
         // after a few revisits and it would stop matching itself.
-        let previous = self.records.get(visitor);
+        let previous = state.records.get(visitor);
         for (name, value) in &stored {
-            if previous
-                .as_ref()
-                .is_some_and(|record| record.components.get(name) == Some(value))
-            {
+            if previous.is_some_and(|record| record.components.get(name) == Some(value)) {
                 continue;
             }
             let hash = match value {
@@ -277,58 +286,100 @@ impl FuzzyStore {
                 Stored::Numeric(n) => self.salt.hash(&n.to_string()),
                 Stored::Set(set) => set_digest(set),
             };
-            self.frequency.record(name, hash);
+            state.frequency.record(name, hash);
         }
 
-        for key in self.blocking_keys(&stored) {
-            self.blocking.insert(key, visitor);
+        let is_new = state.records.upsert(visitor, stored, now_ms).1;
+        // Evict before indexing so freed block slots are available to `visitor`.
+        for (id, record) in state.records.evict(visitor, now_ms) {
+            state.unindex(&id, &record);
         }
-        self.records.observe(visitor, stored, now_ms)
+
+        let State {
+            records, blocking, ..
+        } = state;
+        let Some(record) = records.get_mut(visitor) else {
+            return is_new;
+        };
+        let derived: BTreeSet<BlockingKey> =
+            self.blocking_keys(&record.components).into_iter().collect();
+        for stale in record.keys.difference(&derived) {
+            blocking.remove(stale, visitor);
+        }
+        // Keys already held stay; new ones are kept only if the block admits them.
+        let keys = derived
+            .into_iter()
+            .filter(|key| record.keys.contains(key) || blocking.insert(*key, visitor))
+            .collect();
+        record.keys = keys;
+        is_new
     }
 
     /// Erase `visitor` entirely from the fingerprint library (GDPR right-to-be-
-    /// forgotten): drop its record and purge it from every blocking block, under
-    /// the [`FuzzyStore::identify`] lock so the removal is atomic against a
-    /// concurrent `identify`. Returns `true` when a record existed.
+    /// forgotten): drop its record and its membership in every block it is
+    /// indexed under, in one exclusive critical section, and tombstone the id so
+    /// it is never minted or recorded again (see [`record::TOMBSTONE_CAP`]).
+    /// Returns `true` when a record existed.
     ///
     /// The aggregate [`frequency`] table is intentionally left untouched: it is a
     /// value-frequency aggregate with no per-visitor linkage, so it carries no
     /// personal data to erase and removing a visitor's contribution would corrupt
     /// the shared `u_i` estimates for unrelated visitors.
     pub fn erase(&self, visitor: &str) -> bool {
-        let _guard = self
-            .identify_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let existed = self.records.remove(visitor);
-        self.blocking.remove_visitor(visitor);
-        existed
+        let mut state = self.write();
+        let Some(record) = state.records.remove(visitor) else {
+            return false;
+        };
+        state.unindex(visitor, &record);
+        state.tombstones.insert(visitor);
+        state.bump();
+        true
     }
 
     /// Proactively purge every record older than `max_age_ms` (by `last_seen`)
-    /// relative to `now_ms`, returning the number removed (compliance
-    /// retention). Runs under the [`FuzzyStore::identify`] lock so it is atomic
-    /// against a concurrent `identify`, and is additive to the lazy TTL sweep in
-    /// [`FuzzyStore::observe`] — it ages records out even without observe traffic.
-    ///
-    /// Blocking-index rows for a purged visitor are left as harmless dangling
-    /// keys: stage-one recall re-joins candidates against the record library, and
-    /// a candidate with no record scores `-inf` and can never win, so a stale
-    /// block entry changes no decision. Full block cleanup is reserved for the
-    /// explicit [`FuzzyStore::erase`] path.
+    /// relative to `now_ms`, with its blocking memberships, returning the number
+    /// removed (compliance retention). Additive to the lazy TTL sweep in
+    /// [`FuzzyStore::observe`] — it ages records out even without observe
+    /// traffic. Pops only expired entries from the front of the `last_seen`
+    /// order.
     pub fn purge_expired(&self, now_ms: u64, max_age_ms: u64) -> u64 {
-        let _guard = self
-            .identify_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.records.purge_older_than(now_ms, max_age_ms)
+        let mut state = self.write();
+        let purged = state.records.purge_older_than(now_ms, max_age_ms);
+        for (id, record) in &purged {
+            state.unindex(id, record);
+        }
+        if !purged.is_empty() {
+            state.bump();
+        }
+        purged.len() as u64
+    }
+
+    /// Records evicted so far by the record cap, the TTL, or a retention purge.
+    pub fn evicted(&self) -> u64 {
+        self.read().records.evicted()
+    }
+
+    /// Blocking insertions dropped so far at a full block (fuzzy-matching §4).
+    pub fn dropped(&self) -> u64 {
+        self.read().blocking.dropped()
+    }
+
+    /// Total `(key, visitor)` memberships in the blocking index. Never exceeds
+    /// the sum of the live records' key counts.
+    pub fn blocking_rows(&self) -> usize {
+        self.read().blocking.rows()
     }
 
     /// Stage-one candidate recall: the union of visitors sharing any blocking
     /// key with `components` (fuzzy-matching §4).
-    pub fn candidates(&self, components: &Value) -> HashSet<String> {
-        let stored = self.stored_map(components);
-        self.blocking.candidates(&self.blocking_keys(&stored))
+    pub fn candidates(&self, components: &Components) -> HashSet<String> {
+        let keys = self.blocking_keys(&self.stored_map(components));
+        self.read()
+            .blocking
+            .candidates(&keys)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// The blocking keys for `components`, hex-encoded (fuzzy-matching §4).
@@ -337,63 +388,60 @@ impl FuzzyStore {
     /// its externalized candidate index with. Key derivation depends on the salt
     /// and the `MinHash` permutation family, so a [`FuzzyStore::deterministic`]
     /// store yields keys that are stable across isolate instances.
-    pub fn blocking_key_hexes(&self, components: &Value) -> Vec<String> {
-        let stored = self.stored_map(components);
-        self.blocking_keys(&stored)
+    pub fn blocking_key_hexes(&self, components: &Components) -> Vec<String> {
+        self.blocking_key_hexes_stored(&self.stored_form(components))
+    }
+
+    /// The blocking keys of an already-stored fingerprint (e.g. a persisted
+    /// template), hex-encoded — identical to [`FuzzyStore::blocking_key_hexes`]
+    /// over the components it was stored from.
+    pub fn blocking_key_hexes_stored(&self, stored: &StoredComponents) -> Vec<String> {
+        self.blocking_keys(stored.as_map())
             .iter()
             .map(hex::encode)
             .collect()
     }
 
-    /// Names of the components in `components` that the schema stores (sorted),
-    /// i.e. the ones that take part in matching. Missing, `null`, and
-    /// type-mismatched values are excluded (fuzzy-matching §8).
-    pub fn stored_component_names(&self, components: &Value) -> Vec<String> {
-        self.stored_map(components).into_keys().collect()
+    /// The salted stored form of `components` (fuzzy-matching §3): what the
+    /// record library keeps for them, and the only form a stateless host may
+    /// persist. Absent components are omitted (fuzzy-matching §8).
+    pub fn stored_form(&self, components: &Components) -> StoredComponents {
+        self.stored_map(components).into()
     }
 
-    /// Convert a raw JSON component object into its stored-form map, dropping
-    /// missing or type-mismatched entries (fuzzy-matching §8). Shared by [`observe`],
-    /// [`candidates`], and the stage-two scorer.
+    /// Convert the present components into their stored form, in schema order
+    /// (fuzzy-matching §8: an absent component is simply not compared).
+    fn stored_entries(&self, components: &Components) -> Vec<(Component, Stored)> {
+        components
+            .entries()
+            .map(|(component, value)| (component, self.to_stored(value)))
+            .collect()
+    }
+
+    /// The stored-form map keyed by component name, the shape the record
+    /// library and the blocking keys use. Shared by [`observe`], [`candidates`],
+    /// and the stage-two scorer.
     ///
     /// [`observe`]: FuzzyStore::observe
     /// [`candidates`]: FuzzyStore::candidates
-    fn stored_map(&self, components: &Value) -> BTreeMap<String, Stored> {
-        let mut stored = BTreeMap::new();
-        for (name, value) in object_entries(components) {
-            if let Some(value) = self.to_stored(name, value) {
-                stored.insert(name.clone(), value);
-            }
-        }
-        stored
+    fn stored_map(&self, components: &Components) -> BTreeMap<String, Stored> {
+        self.stored_entries(components)
+            .into_iter()
+            .map(|(component, stored)| (component.name().to_owned(), stored))
+            .collect()
     }
 
     /// Snapshot of a visitor's stored template.
     pub fn record(&self, visitor: &str) -> Option<FingerprintRecord> {
-        self.records.get(visitor)
+        self.read().records.get(visitor).cloned()
     }
 
-    /// Frequency material, for `u_i` estimation by the (future) scorer.
-    pub fn frequency(&self) -> &dyn FrequencyStore {
-        self.frequency.as_ref()
-    }
-
-    /// The blocking index (exposes drop accounting and direct queries).
-    pub fn blocking(&self) -> &dyn CandidateSource {
-        self.blocking.as_ref()
-    }
-
-    /// Convert one raw component value to its stored form per the schema.
-    ///
-    /// Returns `None` for a missing or type-mismatched value (fuzzy-matching §8: a
-    /// missing component is simply not compared).
-    fn to_stored(&self, name: &str, value: &Value) -> Option<Stored> {
-        match classify(name).kind {
-            Kind::Category => canonical_scalar(value).map(|s| Stored::Category(self.salt.hash(&s))),
-            Kind::Numeric => value_to_i64(value).map(Stored::Numeric),
-            Kind::Set => value.as_array().map(|items| {
-                Stored::Set(self.salt.hash_set(items.iter().filter_map(Value::as_str)))
-            }),
+    /// Convert one present component value to its salted stored form (§3).
+    fn to_stored(&self, value: ComponentValue<'_>) -> Stored {
+        match value {
+            ComponentValue::Category(s) => Stored::Category(self.salt.hash(s)),
+            ComponentValue::Numeric(n) => Stored::Numeric(n),
+            ComponentValue::Set(items) => Stored::Set(self.salt.hash_set(items)),
         }
     }
 
@@ -424,12 +472,16 @@ impl FuzzyStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{EvictionPolicy, FuzzyStore};
+    use super::{Components, EvictionPolicy, FuzzyStore};
     use serde_json::json;
 
+    fn components(value: serde_json::Value) -> Components {
+        serde_json::from_value(value).unwrap()
+    }
+
     /// A full high-stability probe that populates both K1 and K2 keys.
-    fn full_probe() -> serde_json::Value {
-        json!({
+    fn full_probe() -> Components {
+        components(json!({
             "webgl": "ANGLE (Intel)",
             "platform": "Linux x86_64",
             "timezone": "Asia/Shanghai",
@@ -437,8 +489,8 @@ mod tests {
             "cpu_cores": 8,
             "device_memory": 8,
             "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"],
-            "user_agent": "Chrome/120",
-        })
+            "canvas": "c0ffee",
+        }))
     }
 
     #[test]
@@ -459,15 +511,19 @@ mod tests {
     }
 
     #[test]
-    fn recall_survives_a_changed_ua_and_one_font() {
+    fn recall_survives_a_changed_canvas_and_one_font() {
         let store = FuzzyStore::new();
         store.observe("v1", &full_probe(), 1_000);
 
-        // Browser auto-upgraded (UA changed) and one font added: the high-stable
-        // K1/K2 keys are unchanged and MinHash still shares bands -> recalled.
+        // Canvas re-noised and one font added: the high-stable K1/K2 keys are
+        // unchanged and MinHash still shares bands -> recalled.
         let mut drifted = full_probe();
-        drifted["user_agent"] = json!("Chrome/121");
-        drifted["fonts"] = json!(["Arial", "Helvetica", "Courier", "Times", "Segoe"]);
+        drifted.canvas = Some("beef".into());
+        drifted.fonts = Some(
+            ["Arial", "Helvetica", "Courier", "Times", "Segoe"]
+                .map(String::from)
+                .to_vec(),
+        );
         assert!(store.candidates(&drifted).contains("v1"));
     }
 
@@ -476,7 +532,7 @@ mod tests {
         let store = FuzzyStore::new();
         store.observe("v1", &full_probe(), 1_000);
 
-        let other = json!({
+        let other = components(json!({
             "webgl": "Apple GPU",
             "platform": "iPhone",
             "timezone": "America/New_York",
@@ -484,8 +540,8 @@ mod tests {
             "cpu_cores": 6,
             "device_memory": 4,
             "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino"],
-            "user_agent": "Safari/17",
-        });
+            "canvas": "f00d",
+        }));
         assert!(!store.candidates(&other).contains("v1"));
     }
 
@@ -497,32 +553,120 @@ mod tests {
 
         // "Linux x86_64" seen twice for the platform component.
         let hash = store.salt.hash("Linux x86_64");
-        assert_eq!(store.frequency().count("platform", hash), 2);
-        assert_eq!(store.frequency().total("platform"), 2);
+        let state = store.read();
+        assert_eq!(state.frequency.count("platform", hash), 2);
+        assert_eq!(state.frequency.total("platform"), 2);
     }
 
     #[test]
     fn missing_components_are_skipped_not_stored() {
         let store = FuzzyStore::new();
         // canvas null (privacy browser) must not be stored as a matchable value.
-        store.observe("v1", &json!({ "webgl": "x", "canvas": null }), 1_000);
+        store.observe(
+            "v1",
+            &components(json!({ "webgl": "x", "canvas": null })),
+            1_000,
+        );
         let record = store.record("v1").unwrap();
         assert!(record.components.contains_key("webgl"));
         assert!(!record.components.contains_key("canvas"));
     }
 
     #[test]
-    fn stored_component_names_lists_only_storable_components() {
-        let store = FuzzyStore::new();
-        let names = store.stored_component_names(&json!({
+    fn stored_form_omits_absent_components_and_raw_values() {
+        let store = FuzzyStore::deterministic(b"s");
+        let stored = store.stored_form(&components(json!({
             "webgl": "ANGLE (Intel)",
-            "screen": "1920x1080",
+            "cpu_cores": 8,
             "fonts": ["Arial"],
             "canvas": null,
-            "touchSupport": { "maxTouchPoints": 5 },
-        }));
-        // Sorted; null and object values are not stored.
-        assert_eq!(names, ["fonts", "screen", "webgl"]);
+        })));
+        let names: Vec<&String> = stored.as_map().keys().collect();
+        assert_eq!(names, ["cpu_cores", "fonts", "webgl"]);
+        let wire = serde_json::to_string(&stored).unwrap();
+        assert!(
+            !wire.contains("ANGLE (Intel)") && !wire.contains("Arial"),
+            "{wire}"
+        );
+        assert_eq!(stored.as_map()["cpu_cores"], super::Stored::Numeric(8));
+    }
+
+    /// The stored wire form round-trips and has the documented shape.
+    #[test]
+    fn stored_form_wire_round_trips() {
+        let store = FuzzyStore::deterministic(b"s");
+        let stored = store.stored_form(&full_probe());
+        let wire = serde_json::to_value(&stored).unwrap();
+        let webgl = wire["webgl"]["category"].as_str().unwrap();
+        assert_eq!(webgl.len(), 64);
+        assert!(
+            webgl
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+        assert_eq!(wire["cpu_cores"], json!({ "numeric": 8 }));
+        assert_eq!(wire["fonts"]["set"].as_array().unwrap().len(), 5);
+        let back: super::StoredComponents = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, stored);
+    }
+
+    /// The stored wire form is closed: unknown names, wrong kinds, malformed
+    /// hashes, and unknown tags are rejected.
+    #[test]
+    fn stored_form_wire_rejects_malformed_input() {
+        let hash = "ab".repeat(32);
+        for bad in [
+            json!({ "user_agent": { "category": hash } }),
+            json!({ "webgl": { "numeric": 1 } }),
+            json!({ "fonts": { "category": hash } }),
+            json!({ "webgl": { "category": "abc" } }),
+            json!({ "webgl": { "category": "zz".repeat(32) } }),
+            json!({ "webgl": { "raw": "ANGLE" } }),
+            json!({ "webgl": { "category": hash, "numeric": 1 } }),
+            json!({ "cpu_cores": { "numeric": 8.5 } }),
+            json!({ "webgl": "ANGLE" }),
+        ] {
+            assert!(
+                serde_json::from_value::<super::StoredComponents>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// Keys from a stored form equal keys from the components it came from.
+    #[test]
+    fn blocking_keys_from_stored_form_match_components() {
+        let store = FuzzyStore::deterministic(b"s");
+        let probe = full_probe();
+        assert_eq!(
+            store.blocking_key_hexes_stored(&store.stored_form(&probe)),
+            store.blocking_key_hexes(&probe)
+        );
+    }
+
+    /// Loading a stored form, then observing a partial drift, yields the same
+    /// template as `merged` and as observing the raw components.
+    #[test]
+    fn stored_observe_and_merge_mirror_native_observe() {
+        let native = FuzzyStore::deterministic(b"s");
+        let edge = FuzzyStore::deterministic(b"s");
+        let drift = components(json!({ "canvas": "beef", "fonts": ["Arial"] }));
+
+        native.observe("v", &full_probe(), 1);
+        native.observe("v", &drift, 2);
+
+        let template = edge.stored_form(&full_probe());
+        let observation = edge.stored_form(&drift);
+        assert!(edge.observe_stored("v", template.clone(), 1));
+        assert!(!edge.observe_stored("v", observation.clone(), 2));
+
+        let expected = native.record("v").unwrap().components;
+        assert_eq!(edge.record("v").unwrap().components, expected);
+        assert_eq!(template.merged(&observation).into_map(), expected);
+        assert_eq!(
+            native.record("v").unwrap().keys,
+            edge.record("v").unwrap().keys
+        );
     }
 
     #[test]
@@ -558,8 +702,15 @@ mod tests {
         assert!(!store.erase("v1"));
 
         // Re-identifying the same device now sees no candidate → a new device.
-        let outcome = store.identify(&probe, 2_000);
+        let outcome = store.identify(&super::IdentifyContext {
+            components: &probe,
+            now_ms: 2_000,
+            client_ip: None,
+        });
         assert!(outcome.is_new_device);
+        // The erased id is tombstoned: it is never recorded again.
+        assert!(!store.observe("v1", &probe, 3_000));
+        assert!(store.record("v1").is_none());
     }
 
     #[test]
@@ -577,79 +728,66 @@ mod tests {
     }
 
     #[test]
-    fn non_object_probe_records_visitor_with_no_components() {
+    fn empty_probe_records_visitor_with_no_components() {
         let store = FuzzyStore::new();
-        assert!(store.observe("v1", &json!("not-an-object"), 1_000));
+        assert!(store.observe("v1", &Components::default(), 1_000));
         assert!(store.record("v1").unwrap().components.is_empty());
     }
 
-    /// A test-only [`FingerprintStore`] that counts writes while delegating the
-    /// actual storage to an inner in-memory [`RecordStore`]. It exists to prove
-    /// [`FuzzyStore::from_backends`] injects the record backend the engine then
-    /// writes through.
-    #[derive(Debug)]
-    struct CountingRecordStore {
-        inner: super::record::RecordStore,
-        observes: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    }
-
-    impl super::FingerprintStore for CountingRecordStore {
-        fn observe(
-            &self,
-            visitor: &str,
-            components: std::collections::BTreeMap<String, super::component::Stored>,
-            now_ms: u64,
-        ) -> bool {
-            self.observes
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.inner.observe(visitor, components, now_ms)
-        }
-
-        fn get(&self, visitor: &str) -> Option<super::record::FingerprintRecord> {
-            self.inner.get(visitor)
-        }
-
-        fn remove(&self, visitor: &str) -> bool {
-            self.inner.remove(visitor)
-        }
-    }
-
-    /// The seam works: a non-default record backend injected via
-    /// [`FuzzyStore::from_backends`] is the one every write goes through, while
-    /// matching still recalls and identifies correctly against it.
+    /// Cap eviction, TTL eviction, retention purge, and erase each leave the
+    /// removed visitor in no block at all, and every live record's key list is
+    /// exactly its memberships.
     #[test]
-    fn injected_record_backend_is_actually_used() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
+    fn removed_visitors_are_absent_from_every_block() {
+        let store = FuzzyStore::new_with_policy(EvictionPolicy {
+            max_records: Some(3),
+            record_ttl_ms: Some(1_000),
+            ..EvictionPolicy::default()
+        });
+        let mut other = full_probe();
+        other.webgl = Some("Other GPU".into());
+        store.observe("capped", &full_probe(), 1);
+        store.observe("ttl", &other, 2);
+        store.observe("erased", &full_probe(), 700);
+        store.observe("purged", &other, 900);
+        // `capped` is the oldest of four under a cap of three.
+        assert!(store.record("capped").is_none());
+        // At t=1_600 `ttl` (age 1_598) expires; `erased`/`purged` survive.
+        store.observe("live", &full_probe(), 1_600);
+        assert!(store.record("ttl").is_none());
+        assert!(store.erase("erased"));
+        assert_eq!(store.purge_expired(1_600, 600), 1);
 
-        let observes = Arc::new(AtomicU64::new(0));
-        let store = FuzzyStore::from_backends(
-            super::Salt::from_secret(b"seam-test"),
-            super::MinHashLsh::from_seed(b"seam-test"),
-            Box::new(CountingRecordStore {
-                inner: super::record::RecordStore::new(),
-                observes: Arc::clone(&observes),
-            }),
-            Box::new(super::BlockingIndex::new()),
-            Box::new(super::FrequencyTable::new()),
-            Box::new(super::AgreementTable::new()),
-            Box::new(super::VelocityTable::new()),
+        let state = store.read();
+        for gone in ["capped", "ttl", "erased", "purged"] {
+            assert!(!state.blocking.indexes(gone), "{gone} still indexed");
+        }
+        let live = state.records.get("live").unwrap();
+        assert_eq!(state.blocking.rows(), live.keys.len());
+        assert_eq!(live.keys.len(), store.blocking_keys(&live.components).len());
+    }
+
+    /// Keys follow the merged template: a later partial observation keeps the
+    /// template's other components, so its keys still include them.
+    #[test]
+    fn keys_track_the_merged_template() {
+        let store = FuzzyStore::new();
+        store.observe("v", &full_probe(), 1_000);
+        let full_keys = store.record("v").unwrap().keys;
+        store.observe("v", &components(json!({ "canvas": "beef" })), 2_000);
+        let record = store.record("v").unwrap();
+        assert_eq!(
+            record.keys,
+            store
+                .blocking_keys(&record.components)
+                .into_iter()
+                .collect()
         );
-
-        // A direct observation writes through the swapped backend...
-        assert!(store.observe("v1", &full_probe(), 1_000));
-        assert_eq!(observes.load(Ordering::Relaxed), 1);
-        // ...and the record it stored is recalled and readable through the seam.
-        assert!(store.candidates(&full_probe()).contains("v1"));
-        assert_eq!(store.record("v1").unwrap().observation_count, 1);
-
-        // identify() persists a confirmed match by folding it back in, so the
-        // injected backend's write path is exercised end to end.
-        let matched = store.identify(&full_probe(), 2_000);
-        assert_eq!(matched.decision, super::Decision::Match);
-        assert_eq!(matched.visitor_id, "v1");
-        assert_eq!(observes.load(Ordering::Relaxed), 2);
+        // K1/K2/font bands are unchanged; only the catch-all K0 moved.
+        assert_eq!(
+            record.keys.intersection(&full_keys).count(),
+            full_keys.len() - 1
+        );
+        assert_eq!(store.blocking_rows(), record.keys.len());
     }
 }

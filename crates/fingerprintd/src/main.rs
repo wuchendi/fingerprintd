@@ -1,5 +1,6 @@
 //! `fingerprintd` binary entry point: initialize tracing, load configuration,
-//! bind the listener, and serve the router with graceful shutdown.
+//! bind the listener, and serve the router with graceful shutdown on SIGTERM or
+//! SIGINT.
 
 #![forbid(unsafe_code)]
 
@@ -30,7 +31,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compliance retention: when a window is configured, sweep the
     // fingerprint library on a timer so records age out even without identify
-    // traffic. Disabled (default) leaves behaviour unchanged.
+    // traffic. Disabled by default.
     if state.retention_ms > 0 {
         spawn_retention_sweep(state.clone(), config.retention_secs);
     }
@@ -57,9 +58,15 @@ fn spawn_retention_sweep(state: AppState, retention_secs: u64) {
         let mut ticker = tokio::time::interval(period);
         loop {
             ticker.tick().await;
-            let purged = state.matcher.purge_expired(now_ms(), state.retention_ms);
-            if purged > 0 {
-                tracing::info!(purged, "retention sweep purged aged records");
+            // The purge takes the store's write lock: keep it off the async workers.
+            let matcher = std::sync::Arc::clone(&state.matcher);
+            let retention_ms = state.retention_ms;
+            match tokio::task::spawn_blocking(move || matcher.purge_expired(now_ms(), retention_ms))
+                .await
+            {
+                Ok(0) => {}
+                Ok(purged) => tracing::info!(purged, "retention sweep purged aged records"),
+                Err(err) => tracing::error!(error = %err, "retention sweep task failed"),
             }
         }
     });
@@ -79,10 +86,41 @@ fn init_tracing() {
     fmt().with_env_filter(filter).init();
 }
 
-/// Resolve when the process receives Ctrl-C (SIGINT), triggering graceful shutdown.
+/// Resolve when the process receives SIGTERM or SIGINT, triggering graceful
+/// shutdown (in-flight requests finish; no new connections are accepted).
+#[cfg(unix)]
 async fn shutdown_signal() {
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %err, "failed to install Ctrl-C handler");
+    use tokio::signal::unix::{SignalKind, signal};
+
+    async fn wait_for(kind: SignalKind, name: &'static str) {
+        match signal(kind) {
+            Ok(mut stream) => {
+                stream.recv().await;
+                tracing::info!(signal = name, "shutdown signal received");
+            }
+            Err(err) => {
+                // Without a handler the default disposition still terminates
+                // the process; never trigger shutdown from a failed install.
+                tracing::error!(error = %err, signal = name, "failed to install signal handler");
+                std::future::pending::<()>().await;
+            }
+        }
     }
-    tracing::info!("shutdown signal received");
+
+    tokio::select! {
+        () = wait_for(SignalKind::terminate(), "SIGTERM") => {}
+        () = wait_for(SignalKind::interrupt(), "SIGINT") => {}
+    }
+}
+
+/// Resolve when the process receives Ctrl-C, triggering graceful shutdown.
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("shutdown signal received"),
+        Err(err) => {
+            tracing::error!(error = %err, "failed to install Ctrl-C handler");
+            std::future::pending::<()>().await;
+        }
+    }
 }
