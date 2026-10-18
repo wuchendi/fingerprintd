@@ -10,16 +10,15 @@ import {
   SIGNATURE_HEADER,
   SIGNATURE_TIMESTAMP_HEADER,
 } from '../src/lib/signature'
-import { EmptyCandidateSource, InMemoryNonceStore } from '../src/lib/state'
 import type { ChallengeResponse, IdentifyResponse } from '../src/lib/types'
-import { EmptyCheckinStore } from '../src/modules/checkin/checkin-state'
 import {
   EdgeEngine,
   initEngineRuntime,
 } from '../src/modules/fingerprint/engine'
+import { EmptyCandidateSource, fakeStores } from './helpers/fakes'
 
 /** Drive the Hono app with injected deps; state lives in `deps`, so a fresh app
- *  per call is fine (a shim over the pre-Hono `handleRequest(req, deps)`). */
+ *  per call is fine. */
 const handleRequest = (req: Request, deps: Deps) => createApp(deps).request(req)
 
 // Load the vendored WASM engine once for the whole suite (mirrors how the
@@ -32,15 +31,16 @@ beforeAll(() => {
   initEngineRuntime(bytes)
 })
 
-/** Build injected deps + a fresh STUBBED state for a given environment. */
+/** Test salt every config in this suite resolves with. */
+const SALT = 'test-salt'
+
+/** Build injected deps + fresh fake state for a given environment. */
 function makeDeps(env: Env = {}): Deps {
-  const config = resolveConfig(env)
+  const config = resolveConfig({ FP_SALT_SECRET: SALT, ...env })
   return {
     engine: new EdgeEngine(config),
-    nonces: new InMemoryNonceStore(config.nonceTtlSecs),
-    candidates: new EmptyCandidateSource(),
     config,
-    checkin: new EmptyCheckinStore(),
+    ...fakeStores(config.nonceTtlSecs),
   }
 }
 
@@ -126,8 +126,8 @@ describe('POST /identify', () => {
     expect(body.decision).toBe('new_device')
     expect(body.confidence).toBeGreaterThanOrEqual(0)
     expect(body.confidence).toBeLessThanOrEqual(1)
-    // Neutral degraded signals when no Bot Management headers are present. With
-    // no velocity binding injected the velocity bands stay the neutral `low`.
+    // Neutral degraded signals when no Bot Management headers are present; the
+    // no-op velocity store keeps the velocity bands at the neutral `low`.
     expect(body.signals).toEqual({
       ua_tls_consistent: true,
       ip_risk: 'low',
@@ -222,7 +222,10 @@ describe('nonce-probe enforcement', () => {
     // Ties the edge probe check to the browser collector's vendored artifact
     // (packages/client) and the native server — same key, same nonce, same hex.
     const engine = new EdgeEngine(
-      resolveConfig({ FP_PROBE_KEY: 'test-probe-secret' }),
+      resolveConfig({
+        FP_SALT_SECRET: SALT,
+        FP_PROBE_KEY: 'test-probe-secret',
+      }),
     )
     expect(engine.expectedProbe('fixed-nonce-000')).toBe(
       'ad83144894f917b94072c2f7b3246af66d3bc5a450562ccf3671ed64d33137d0',
@@ -270,7 +273,10 @@ describe('response signing', () => {
     // same timestamp + body, same hex — the response-signing analogue of the
     // probe parity vector, proving the signing Worker Secret path is identical.
     const engine = new EdgeEngine(
-      resolveConfig({ FP_SIGNING_KEY: 'test-signing-secret' }),
+      resolveConfig({
+        FP_SALT_SECRET: SALT,
+        FP_SIGNING_KEY: 'test-signing-secret',
+      }),
     )
     const body = new TextEncoder().encode('{"visitorId":"abc"}')
     expect(engine.sign(1_700_000_000_000, body)).toBe(
@@ -552,7 +558,7 @@ describe('new-device velocity (edge DO band)', () => {
     }
   }
 
-  const trustedDepsWith = (velocity?: NewDeviceVelocityStore): Deps => ({
+  const trustedDepsWith = (velocity: NewDeviceVelocityStore): Deps => ({
     ...makeDeps({ FP_TRUST_EDGE_HEADERS: '1' }),
     velocity,
   })
@@ -604,16 +610,6 @@ describe('new-device velocity (edge DO band)', () => {
     ])
   })
 
-  it('fails open to low when no velocity binding is present', async () => {
-    // Trusted headers + a new device, but the binding is unbound (undefined).
-    const body = await identify(trustedDepsWith(undefined), {
-      'cf-bot-management-ja4': BROWSER_JA4,
-      'cf-connecting-ip': '198.51.100.7',
-    })
-    expect(body.signals.new_device_velocity).toBe('low')
-    expect(body.signals.new_device_velocity_ja4).toBe('low')
-  })
-
   it('fails open to low when the DO throws', async () => {
     const body = await identify(trustedDepsWith(new ThrowingVelocity()), {
       'cf-bot-management-ja4': BROWSER_JA4,
@@ -640,7 +636,7 @@ describe('new-device velocity (edge DO band)', () => {
   })
 })
 
-describe('DELETE /visitor/:id erasure (M6b)', () => {
+describe('DELETE /visitor/:id erasure', () => {
   /** Deps with an injected candidate source whose `erase` is spy-able. */
   function eraseDeps(env: Env = {}) {
     const candidates = new EmptyCandidateSource()

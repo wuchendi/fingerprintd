@@ -6,11 +6,11 @@ import {
   text,
 } from 'drizzle-orm/sqlite-core'
 
-// Edge D1 state schema — the externalized half of `fingerprintd`'s in-memory store
-// (DESIGN.md fuzzy-matching §3/§4/§9/§11). Mirrors the native
-// `FingerprintRecord` + `BlockingIndex`. The one-time nonce is the exception:
-// it needs atomic check-and-burn (D1's eventual replication cannot give it), so
-// it lives in a Durable Object, not here.
+// Edge fingerprint state schema (libSQL or D1) — the externalized half of
+// `fingerprintd`'s in-memory store (DESIGN.md fuzzy-matching §3/§4/§11). Mirrors
+// the native `FingerprintRecord` + `BlockingIndex`. The one-time nonce is the
+// exception: it needs atomic check-and-burn, so it lives in a Durable Object,
+// not here.
 
 /**
  * Fingerprint library: `visitorId -> template` (fuzzy-matching §3/§11). `components`
@@ -44,14 +44,3 @@ export const blockingIndex = sqliteTable(
     index('idx_blocking_index_key').on(t.key),
   ],
 )
-
-/**
- * Per-value frequency material for the `u_i` rarity estimate (fuzzy-matching §9), keyed
- * by salted value hash so no plaintext component value is stored. Provisioned
- * here; unpopulated on the edge (the WASM `score` approximates `u_i` over the
- * recalled block — the parity refinement).
- */
-export const valueFrequency = sqliteTable('value_frequency', {
-  valueHash: text('value_hash').primaryKey(),
-  count: integer('count').notNull(),
-})

@@ -16,18 +16,18 @@ cross-stack parity proof now run:
 | Router `/health` `/challenge` `/identify` | ✅ real, byte-compatible with the server | |
 | WASM compute (blocking keys, scoring, probe, signing) | ✅ real (`FpEngine`) | |
 | One-time nonce | ✅ Durable Object (`NonceDurableObject`) | atomic check-and-burn + TTL alarm |
-| Fingerprint library + blocking index | ✅ D1 (`templates`, `blocking_index`) | recall → score → drift write-back |
+| Fingerprint library + blocking index | ✅ libSQL (default) or D1 (`templates`, `blocking_index`) | recall → score → drift write-back |
 | Worker Secrets (salt / probe / signing) | ✅ read at runtime; local via `.dev.vars` | never embedded — see "Deploy" |
 | Parity (Worker == native fp-core) | ✅ shared-fixture suite, both stacks | see "Parity" below |
-| `value_frequency` (global `u_i`) | 🟡 schema provisioned; block-local `u_i` used | bounded divergence — see "Parity" |
+| Global `u_i` frequency table | 🟡 not stored; block-local `u_i` used | bounded divergence — see "Parity" |
 | Passive signals (JA4/IP) | 🟡 neutral degraded default | matches the server's default (no trusted edge) |
 
 The orchestration in `src/app.ts` (a Hono app) — derive blocking keys → recall
 candidates → score → persist per the verdict — is the **real edge host flow**,
 mirroring `fingerprintd`'s `identify`. `POST /identify` bodies are validated with Zod.
 State is injected (`NonceStore` / `CandidateSource`), so the app is unchanged
-whether it runs on the Durable Object + D1 (Worker) or the in-isolate stubs (Node
-unit tests, or a bare `wrangler dev` with no bindings).
+whether it runs on the Durable Object + database (Worker) or the in-isolate stubs
+(Node unit tests).
 
 ## Parity (Worker == native)
 
@@ -62,10 +62,9 @@ diverge is the Fellegi–Sunter rarity term `u_i`: the native scorer reads a
 estimates `u_i` over just the recalled block. They coincide until the store holds
 a device that a scoring probe does NOT recall (a heterogeneous population with
 partial recall), after which `u_i` — and only `confidence`, never the identity or
-decision — can differ slightly. Closing that gap means populating `value_frequency`
-(migration `0001` provisions it) via a WASM-exposed salted hasher and feeding the
-global snapshot into `score`; it is a pure addition, not a migration, and remains
-a deliberate future refinement. Identity and decision parity hold regardless.
+decision — can differ slightly. Closing that gap means storing a global
+frequency table via a WASM-exposed salted hasher and feeding the snapshot into
+`score`; it remains a deliberate future refinement. Identity and decision parity hold regardless.
 
 The template-merge edge case is likewise bounded: drift merges raw components per
 key (present overwrites, absent retained); native additionally drops null/invalid
@@ -85,18 +84,18 @@ src/
   config/index.ts         resolve typed config + state bindings from env (schema/loader)
   config/risk-config.ts   per-action check-in weights / thresholds / bands (defaultProfiles)
   db/schema.ts            Drizzle schema barrel (re-exports both domains)
-  db/fingerprint.schema.ts  templates / blocking_index / value_frequency
+  db/fingerprint.schema.ts  templates / blocking_index
   db/checkin.schema.ts    checkin_events
-  db/client.ts            Drizzle D1 client factory
-  drizzle/                drizzle-kit-generated D1 migrations (one set for the whole DB)
+  db/client.ts            Drizzle client: DB_TYPE selects libSQL (default) or D1
+  drizzle/                drizzle-kit-generated migrations (one set for the whole DB)
   modules/fingerprint/
     engine.ts             typed wrapper around the FpEngine WASM class + one-time init
-    fingerprint-store-d1.ts  D1 recall + drift persistence via Drizzle (templates + index)
+    fingerprint-store.ts  recall + drift persistence via Drizzle (templates + index)
     fingerprint.routes.ts    GET /challenge, POST /identify (Zod), DELETE /visitor/:id
     index.ts              module barrel (public surface)
   modules/checkin/
     checkin-state.ts      CheckinStore contract + empty (unbound) fallback
-    checkin-store-d1.ts   D1 append + windowed account/device/IP/time aggregates
+    checkin-store.ts      append + windowed account/device/IP/time aggregates
     risk-engine.ts        pure check-in risk scoring (assess -> verdict)
     checkin.routes.ts     POST /checkin/assess (Zod)
     index.ts              module barrel (public surface)
@@ -107,23 +106,27 @@ src/
   lib/do/nonce-do.ts      NonceDurableObject (atomic burn) + DurableNonceStore adapter
   lib/do/velocity-do.ts   VelocityDurableObject (hot counters; not on the MVP assess path)
 drizzle.config.ts         drizzle-kit config (schema -> src/db/schema.ts, out -> ./drizzle)
+scripts/d1-config.ts      writes wrangler.d1.jsonc (wrangler.jsonc with the D1 block enabled)
 wasm/                     vendored `wasm-pack --target web` build of crates/fp-wasm
 tests/
   app.test.ts             Node: Hono app contract + secret-gated paths over the WASM
-  state.workers.test.ts   miniflare: nonce DO + D1 recall/drift + e2e
+  *-store.test.ts         Node: database stores on libSQL under the D1 100-param guard
+  state.workers.test.ts   miniflare: nonce DO + e2e through the Worker on D1
   parity.workers.test.ts  miniflare: cross-stack parity vs the native reference
   fixtures/parity.json    shared parity vectors (also driven by crates/fingerprintd)
 ```
 
 ## Configuration
 
-With **no** environment set the Worker mirrors a default `fingerprintd`: probe
-enforcement off, response signing off, timestamp window off, 30s nonce TTL. All
-secrets are read at runtime — never embedded.
+The Worker defaults mirror `fingerprintd`: probe enforcement off, response
+signing off, timestamp window off, 30s nonce TTL. `FP_SALT_SECRET`, the
+`NONCE` / `VELOCITY` Durable Objects, the `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT`
+bindings, and the database configuration are required — any one missing throws
+on the first request. All secrets are read at runtime — never embedded.
 
 | Binding | Role | Default |
 | --- | --- | --- |
-| `FP_SALT_SECRET` (secret) | seeds the deterministic salt + MinHash family | dev placeholder |
+| `FP_SALT_SECRET` (secret) | seeds the deterministic salt + MinHash family; **required** | — |
 | `FP_PROBE_KEY` (secret) | nonce-probe key; unset ⇒ probe check off | off |
 | `FP_SIGNING_KEY` (secret) | response-signing key; unset ⇒ signing off | off |
 | `FP_ENFORCE_TS_WINDOW` (var) | `"1"`/`"true"` enables the timestamp window | off |
@@ -132,9 +135,15 @@ secrets are read at runtime — never embedded.
 | `FP_TRUST_EDGE_HEADERS` (var) | trust edge-injected passive-signal headers | off |
 | `FP_INTEGRITY_PENALTY_ENABLED` (var) | let a `noise` client-integrity verdict lower confidence (the band is always surfaced) | off |
 | `FP_CORS_ORIGINS` (var) | comma-separated browser CORS origins (`*` = any); unset ⇒ CORS off | off |
-| `NONCE` (Durable Object) | one-time nonce store; unbound ⇒ in-isolate stub | — |
-| `DB` (D1) | single database — fingerprint library + blocking index + check-in event log; unbound ⇒ empty stub | — |
-| `VELOCITY` (Durable Object) | hot velocity counters (check-in); not on the MVP assess path | — |
+| `NONCE` (Durable Object) | one-time nonce store; **required** | — |
+| `DB_TYPE` (var) | database driver: `libsql` or `d1` | `libsql` |
+| `LIBSQL_URL` (var/secret) | libSQL server URL (e.g. Turso); required for `libsql` | — |
+| `LIBSQL_AUTH_TOKEN` (secret) | libSQL auth token; omit for an unauthenticated server | — |
+| `DB` (D1) | D1 database — fingerprint library + blocking index + check-in event log; required for `d1` | — |
+| `VELOCITY` (Durable Object) | new-device velocity counter behind the `/identify` velocity bands; **required** | — |
+| `RATE_LIMIT` (rate limit) | per-IP limit on `POST /identify` + `POST /checkin/assess` (429 when exceeded); **required** | 60 / 60s |
+| `CHALLENGE_RATE_LIMIT` (rate limit) | per-IP limit on `GET /challenge`, a separate bucket from `RATE_LIMIT` (429 when exceeded); **required** | 120 / 60s |
+| `FP_RETENTION_SECS` (var) | purge templates not seen for this long; `0` ⇒ off | 2592000 (30 days) |
 | `CHECKIN_RETENTION_SECS` (var) | purge check-in events older than this; `0` ⇒ off | 0 |
 
 The three `FP_*` **secrets** are read at runtime and never embedded in the
@@ -145,8 +154,13 @@ artifact. Provide them per environment:
 - **Remote:** set each with `wrangler secret put FP_SALT_SECRET` (etc.) — never
   commit them. `[vars]` in `wrangler.jsonc` are for the non-secret flags only.
 
-The `NONCE` / `DB` bindings are wired in `wrangler.jsonc`; a bare `wrangler dev`
-without them falls back to the stubs (single-isolate nonce, every probe new).
+The `NONCE`, `VELOCITY`, `RATE_LIMIT`, and `CHALLENGE_RATE_LIMIT` bindings are wired in
+`wrangler.jsonc`; `keep_vars` keeps dashboard-set vars across deploys. A missing
+binding, `FP_SALT_SECRET`, or database configuration (no `LIBSQL_URL` for
+`libsql`, no `DB` for `d1`) fails the request with a clear error.
+The D1 block is commented out in `wrangler.jsonc`; `bun run cf:d1config` writes a
+gitignored `wrangler.d1.jsonc` with it enabled. To run on D1, uncomment the block
+and set `DB_TYPE` to `"d1"`.
 
 `FP_SALT_SECRET` MUST be stable and identical across every isolate — it seeds the
 deterministic salt + MinHash family, so rotating it re-partitions the blocking
@@ -188,8 +202,7 @@ windowed account/device/IP/time aggregates (device fan-out, account device count
 new-device rate, IP sharing, timing regularity), and scores them with
 fingerprintd's hard signals through the pure `assess()` engine
 (`modules/checkin/risk-engine.ts`; weights/thresholds in `config/risk-config.ts`).
-Unbound (`DB` absent) it falls back to zero aggregates, so every request
-scores on the fingerprintd signals alone. The [playground](../web/README.md)
+The [playground](../web/README.md)
 demos the full identify → assess flow.
 
 ## Develop & verify
@@ -199,9 +212,10 @@ bun install
 bun run lint        # biome check .
 bun run typecheck   # tsc --noEmit
 bun run test        # vitest run — two projects:
-                    #   node    — router contract over the vendored WASM
-                    #   workers — state layer (nonce DO + D1) + cross-stack parity
-                    #             in real miniflare
+                    #   node    — router contract over the vendored WASM +
+                    #             the stores on libSQL
+                    #   workers — Durable Objects + the Worker on D1
+                    #             (DB_TYPE=d1) + cross-stack parity in miniflare
 bun run deploy:dry  # wrangler deploy --dry-run (bundles the Worker + .wasm + bindings)
 bun run dev         # wrangler dev --local (loads .dev.vars; local workerd, no account)
 ```
@@ -215,18 +229,21 @@ cargo test -p fingerprintd-server --test parity           # native half (from re
 ```
 
 The `workers` test project (`*.workers.test.ts`) runs under
-`@cloudflare/vitest-pool-workers`, so the Durable Object burn, the D1
+`@cloudflare/vitest-pool-workers`, so the Durable Object burn, the Worker's D1
 recall/persist round-trips, **and** the parity vectors execute against the actual
-workerd runtime with the `wrangler.jsonc` bindings live — a fresh local D1 with
-the `drizzle/` migrations applied. No Cloudflare account is needed; miniflare
-provides D1/DO locally.
+workerd runtime — a fresh local D1 (declared by the pool config with
+`DB_TYPE=d1`) with the `drizzle/` migrations applied. No Cloudflare account is
+needed; miniflare provides D1/DO locally.
 
-Apply migrations to a real (or persistent local) D1 with:
+Apply migrations with:
 
 ```bash
-wrangler d1 migrations apply fingerprintd --local   # local sqlite
-wrangler d1 migrations apply fingerprintd            # remote (needs an account)
+LIBSQL_URL=… LIBSQL_AUTH_TOKEN=… bun run db:migrate   # libSQL (drizzle-kit migrate)
+bun run cf:localdb                                     # local D1 sqlite
+bun run cf:remotedb                                    # remote D1 (needs an account)
 ```
+
+`bun run db:gen` regenerates `drizzle/` from the schema and needs no env.
 
 ### Rebuilding the vendored WASM
 
@@ -248,32 +265,30 @@ injection is needed here (unlike the browser probe in `packages/client`).
 ### Local (no account)
 
 ```bash
-cp .dev.vars.example .dev.vars                       # then edit in real dev values
-wrangler d1 migrations apply fingerprintd --local    # seed the local sqlite schema
-bun run dev                                          # wrangler dev --local
+cp .dev.vars.example .dev.vars   # then edit in real dev values, incl. LIBSQL_URL
+bun run db:migrate               # seed the libSQL schema (e.g. `turso dev --port 8081`)
+bun run dev                      # wrangler dev --local
 ```
 
-`wrangler dev --local` runs the full stack — Worker + WASM + Durable Object + D1 —
-in local workerd/miniflare, loading `.dev.vars` as the secrets. No account needed.
+`wrangler dev --local` runs the Worker + WASM + Durable Objects in local
+workerd/miniflare, loading `.dev.vars` as the secrets, against the libSQL server
+at `LIBSQL_URL`. No account needed.
 
 ### Real Cloudflare (account holder)
 
 SQLite-backed Durable Objects + D1 are on the Workers free plan, so a test
 deploy needs no paid plan.
 
-1. **Create D1** and copy the id it prints into `wrangler.jsonc`
-   (`d1_databases[0].database_id` — already set to a real D1; replace it for a
-   fresh account):
+1. **Provision the database.** libSQL (default): set `LIBSQL_URL` and
+   `wrangler secret put LIBSQL_AUTH_TOKEN`. D1: `wrangler d1 create fingerprintd`,
+   put the id into the commented `d1_databases` block, uncomment it and set
+   `DB_TYPE` to `"d1"`.
+
+2. **Apply migrations** (the drizzle-kit output in `apps/edge/drizzle/`):
 
    ```bash
-   wrangler d1 create fingerprintd
-   ```
-
-2. **Apply migrations** to the remote database (the drizzle-kit output in
-   `apps/edge/drizzle/`):
-
-   ```bash
-   bun run cf:remotedb   # wrangler d1 migrations apply fingerprintd --remote
+   bun run db:migrate    # libSQL
+   bun run cf:remotedb   # D1 (applies via a generated wrangler.d1.jsonc)
    ```
 
 3. **Set the secrets** (prompted for each value; nothing is committed):

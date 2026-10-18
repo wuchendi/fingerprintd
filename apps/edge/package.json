@@ -29,11 +29,14 @@
     "deploy": "wrangler deploy --minify",
     "db:gen": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "cf:localdb": "wrangler d1 migrations apply fingerprintd --local",
-    "cf:remotedb": "wrangler d1 migrations apply fingerprintd --remote"
+    "db:migrate": "drizzle-kit migrate",
+    "cf:d1config": "bun scripts/d1-config.ts",
+    "cf:localdb": "bun scripts/d1-config.ts && wrangler d1 migrations apply fingerprintd -c wrangler.d1.jsonc --local",
+    "cf:remotedb": "bun scripts/d1-config.ts && wrangler d1 migrations apply fingerprintd -c wrangler.d1.jsonc --remote"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.9.1",
+    "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
     "zod": "^4.6.5"

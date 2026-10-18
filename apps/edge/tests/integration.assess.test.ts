@@ -4,7 +4,7 @@
  * Drives the full handler -> store -> engine -> response path over the real
  * Hono app from `createApp`, injecting a fake {@link CheckinStore} that returns
  * controlled {@link AggregateResult} values (the store's own D1 query logic has
- * dedicated coverage in `checkin-store.workers.test.ts`). Each representative
+ * dedicated coverage in `checkin-store.test.ts`). Each representative
  * business scenario asserts the decision/verdict BAND the merged
  * engine actually produces — expectations are computed here from the committed
  * `defaultProfiles` weights/bands, never from loose prose, so this test tracks
@@ -19,19 +19,18 @@ import { createApp } from '../src/app'
 import { resolveConfig } from '../src/config'
 import type { ReasonCode, ThresholdProfile } from '../src/config/risk-config'
 import { defaultProfiles } from '../src/config/risk-config'
-import { EmptyCandidateSource, InMemoryNonceStore } from '../src/lib/state'
 import type {
   AssessRequest,
   AssessResponse,
   IdentifyResponse,
 } from '../src/lib/types'
 import type { CheckinStore } from '../src/modules/checkin/checkin-state'
-import { zeroAggregateResult } from '../src/modules/checkin/checkin-state'
-import type { AggregateResult } from '../src/modules/checkin/checkin-store-d1'
+import type { AggregateResult } from '../src/modules/checkin/checkin-store'
 import {
   EdgeEngine,
   initEngineRuntime,
 } from '../src/modules/fingerprint/engine'
+import { fakeStores, zeroAggregateResult } from './helpers/fakes'
 
 // The assess path lives in the merged edge app, so a test builds the FULL edge
 // `Deps` with an injected check-in store. The WASM engine loads once from the
@@ -45,12 +44,11 @@ beforeAll(() => {
 
 /** Build the full edge deps with an injected check-in store. */
 function makeDeps(checkin: CheckinStore): Deps {
-  const config = resolveConfig({})
+  const config = resolveConfig({ FP_SALT_SECRET: 'test-salt' })
   return {
     engine: new EdgeEngine(config),
-    nonces: new InMemoryNonceStore(config.nonceTtlSecs),
-    candidates: new EmptyCandidateSource(),
     config,
+    ...fakeStores(config.nonceTtlSecs),
     checkin,
   }
 }

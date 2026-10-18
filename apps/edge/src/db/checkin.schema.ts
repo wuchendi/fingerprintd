@@ -4,9 +4,9 @@ import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 // lacks. One append-only row per assessed check-in,
 // carrying only the three graph dimensions plus the edge-observed timestamp;
 // all farming signals are windowed `COUNT(DISTINCT ...)` aggregates over it
-// (see `src/checkin-store-d1.ts`). Hot atomic velocity counters that would
-// otherwise scan this table per request live in a Durable Object instead
-// (`src/lib/do/velocity-do.ts`).
+// (see `src/modules/checkin/checkin-store.ts`). Hot atomic velocity counters
+// that would otherwise scan this table per request live in a Durable Object
+// instead (`src/lib/do/velocity-do.ts`).
 
 /**
  * Append-only check-in event: `(accountId, visitorId, ip)` observed at `ts`

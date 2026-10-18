@@ -4,25 +4,25 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import type { Deps } from '../src/app'
 import { createApp } from '../src/app'
 import { resolveConfig } from '../src/config'
-import { EmptyCandidateSource, InMemoryNonceStore } from '../src/lib/state'
 import type {
   AssessRequest,
   AssessResponse,
   IdentifyResponse,
 } from '../src/lib/types'
 import type { CheckinStore } from '../src/modules/checkin/checkin-state'
-import {
-  EmptyCheckinStore,
-  zeroAggregateResult,
-} from '../src/modules/checkin/checkin-state'
 import type {
   AggregateResult,
   CheckinEvent,
-} from '../src/modules/checkin/checkin-store-d1'
+} from '../src/modules/checkin/checkin-store'
 import {
   EdgeEngine,
   initEngineRuntime,
 } from '../src/modules/fingerprint/engine'
+import {
+  EmptyCheckinStore,
+  fakeStores,
+  zeroAggregateResult,
+} from './helpers/fakes'
 
 // `/checkin/assess` lives in the merged edge app, so a test drives the FULL
 // edge `Deps` (engine, nonces, candidates, config) with an injected check-in
@@ -37,12 +37,11 @@ beforeAll(() => {
 
 /** Build the full edge deps with an injected check-in store (empty by default). */
 function makeDeps(checkin: CheckinStore = new EmptyCheckinStore()): Deps {
-  const config = resolveConfig({})
+  const config = resolveConfig({ FP_SALT_SECRET: 'test-salt' })
   return {
     engine: new EdgeEngine(config),
-    nonces: new InMemoryNonceStore(config.nonceTtlSecs),
-    candidates: new EmptyCandidateSource(),
     config,
+    ...fakeStores(config.nonceTtlSecs),
     checkin,
   }
 }

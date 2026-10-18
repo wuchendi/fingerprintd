@@ -7,11 +7,13 @@
  * initializes the WASM runtime once, builds the configured engine and the host
  * state, and hands each request to the Hono app in `app.ts`.
  *
- * State: when the `NONCE` Durable Object and `DB` D1 bindings are present
- * the Worker uses the durable nonce store and the D1 fingerprint index; unbound
- * (e.g. a bare `wrangler dev` without state, or a Node unit test) it falls back
- * to the in-isolate stubs, so the app runs either way. The nonce Durable Object
- * class is re-exported here so wrangler can bind it.
+ * State: the fingerprint index and the check-in event log live in the database
+ * `getDb` selects (libSQL by default, D1 with `DB_TYPE=d1`); nonces and
+ * new-device velocity live in the `NONCE` / `VELOCITY` Durable Objects; the
+ * `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT` bindings cap per-IP request rates. Every one of these, plus
+ * `FP_SALT_SECRET`, is required: a missing piece throws on the first request
+ * instead of running degraded. The Durable Object classes are re-exported here
+ * so wrangler can bind them.
  */
 
 import wasmModule from '../wasm/fp_wasm_bg.wasm'
@@ -19,14 +21,13 @@ import type { Deps } from './app'
 import { createApp } from './app'
 import type { Env } from './config'
 import { resolveConfig } from './config'
+import { getDb } from './db/client'
 import { DurableNonceStore } from './lib/do/nonce-do'
 import { VelocityStore } from './lib/do/velocity-do'
-import type { CandidateSource, NonceStore } from './lib/state'
-import { EmptyCandidateSource, InMemoryNonceStore } from './lib/state'
-import { D1CheckinStore, EmptyCheckinStore } from './modules/checkin'
+import { CheckinEventStore } from './modules/checkin'
 import {
-  D1FingerprintStore,
   EdgeEngine,
+  FingerprintStore,
   initEngineRuntime,
 } from './modules/fingerprint'
 
@@ -40,32 +41,30 @@ let app: ReturnType<typeof createApp> | undefined
 /** Build (once per isolate) the engine + host state from the environment. */
 function buildDeps(env: Env): Deps {
   if (deps) return deps
-  initEngineRuntime(wasmModule)
+  if (!env.NONCE) throw new Error('NONCE Durable Object binding is required')
+  if (!env.VELOCITY) {
+    throw new Error('VELOCITY Durable Object binding is required')
+  }
+  if (!env.RATE_LIMIT) {
+    throw new Error('RATE_LIMIT rate-limit binding is required')
+  }
+  if (!env.CHALLENGE_RATE_LIMIT) {
+    throw new Error('CHALLENGE_RATE_LIMIT rate-limit binding is required')
+  }
   const config = resolveConfig(env)
+  const db = getDb(env)
+  initEngineRuntime(wasmModule)
   deps = {
     engine: new EdgeEngine(config),
-    nonces: nonceStore(env, config.nonceTtlSecs),
-    candidates: candidateSource(env),
+    nonces: new DurableNonceStore(env.NONCE, config.nonceTtlSecs),
+    candidates: new FingerprintStore(db),
     config,
-    checkin: env.DB ? new D1CheckinStore(env.DB) : new EmptyCheckinStore(),
-    // The VELOCITY Durable Object backs the cross-session new-device velocity
-    // signal; unbound ⇒ omitted, and the /identify path degrades to the neutral
-    // `low` band (fail-open), like the pre-DO stateless edge.
-    velocity: env.VELOCITY ? new VelocityStore(env.VELOCITY) : undefined,
+    checkin: new CheckinEventStore(db),
+    velocity: new VelocityStore(env.VELOCITY),
+    rateLimiter: env.RATE_LIMIT,
+    challengeRateLimiter: env.CHALLENGE_RATE_LIMIT,
   }
   return deps
-}
-
-/** The durable nonce store when the DO is bound, else the in-isolate stub. */
-function nonceStore(env: Env, ttlSecs: number): NonceStore {
-  return env.NONCE
-    ? new DurableNonceStore(env.NONCE, ttlSecs)
-    : new InMemoryNonceStore(ttlSecs)
-}
-
-/** The D1 fingerprint index when bound, else the empty stub (all new devices). */
-function candidateSource(env: Env): CandidateSource {
-  return env.DB ? new D1FingerprintStore(env.DB) : new EmptyCandidateSource()
 }
 
 export default {
@@ -75,13 +74,12 @@ export default {
   },
 
   /**
-   * D1 retention purge, driven by the `wrangler.jsonc` cron trigger. Two
+   * Database retention purge, driven by the `wrangler.jsonc` cron trigger. Two
    * independent purges run in this one invocation:
-   *   - fingerprint templates: when `FP_RETENTION_SECS` > 0 and `DB` is bound,
-   *     delete every template last seen beyond the window plus its
-   *     blocking-index rows;
-   *   - check-in events: when `CHECKIN_RETENTION_SECS` > 0 and `DB` is
-   *     bound, delete every check-in event older than the window.
+   *   - fingerprint templates: when `FP_RETENTION_SECS` > 0, delete every
+   *     template last seen beyond the window plus its blocking-index rows;
+   *   - check-in events: when `CHECKIN_RETENTION_SECS` > 0, delete every
+   *     check-in event older than the window.
    * Either disabled (0) ⇒ that purge is a no-op. The purge queries live on the
    * respective stores so they are unit-testable without the cron.
    */
@@ -91,8 +89,8 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<void> {
     const config = resolveConfig(env)
-    if (config.retentionMs > 0 && env.DB) {
-      const purged = await new D1FingerprintStore(env.DB).purgeOlderThan(
+    if (config.retentionMs > 0) {
+      const purged = await new FingerprintStore(getDb(env)).purgeOlderThan(
         Date.now(),
         config.retentionMs,
       )
@@ -100,8 +98,8 @@ export default {
         console.log(`retention purge: removed ${purged} stale template(s)`)
       }
     }
-    if (config.checkinRetentionMs > 0 && env.DB) {
-      const purged = await new D1CheckinStore(env.DB).purgeOlderThan(
+    if (config.checkinRetentionMs > 0) {
+      const purged = await new CheckinEventStore(getDb(env)).purgeOlderThan(
         Date.now() - config.checkinRetentionMs,
       )
       if (purged > 0) {

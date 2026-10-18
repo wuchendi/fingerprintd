@@ -1,29 +1,28 @@
 /**
- * Hot atomic velocity counters as a Durable Object.
+ * Cross-session new-device velocity counters as a Durable Object.
  *
- * The windowed fan-out aggregates (`device_account_fanout`, `ip_account_count`)
- * are load-bearing but expensive: computing them from D1 means a `COUNT(DISTINCT)`
- * scan on every check-in. For the hottest entities — a device farm's shared
- * device, a proxy's shared IP — that scan repeats thousands of times a minute.
- * A Durable Object gives the edge primitive D1 cannot: a single-threaded
- * instance whose storage is serialized, so a distinct-member velocity count can
- * be maintained incrementally and read atomically without touching the table.
+ * Every `NewDevice` verdict on `/identify` mints a fresh `visitorId`; the edge
+ * counts how many distinct ones an IP (or JA4 shape class) produced inside a
+ * rolling window and bands that count like `fingerprintd::fuzzy::velocity`. A
+ * Durable Object gives the edge the primitive the database cannot: a
+ * single-threaded instance whose storage is serialized, so a distinct-member
+ * count is maintained incrementally and read atomically on the hot path.
  *
- * ONE INSTANCE PER ENTITY: the host addresses the DO by `idFromName(scopeKey)`
- * (e.g. `v:<visitorId>` or `ip:<ip>`), so each entity's rolling window lives in
- * its own instance. Each `bump` records the member (the counterpart id) with an
+ * ONE INSTANCE PER KEY: the host addresses the DO by `idFromName(scopeKey)`
+ * (`nv:<ip>` or `nvja4:<class>`), so each key's rolling window lives in its own
+ * instance. Each `bump` records the member (the minted visitorId) with an
  * expiry, prunes lapsed members, and returns the live distinct count. An alarm
  * at the furthest expiry evicts a fully-lapsed instance so storage does not leak.
  */
 
-/** The single storage key each per-entity instance holds. */
+/** The single storage key each per-key instance holds. */
 const RECORD_KEY = 'members'
 
-/** Live members of one entity's window: `memberId -> absolute expiry (Unix ms)`. */
+/** Live members of one key's window: `memberId -> absolute expiry (Unix ms)`. */
 type MemberMap = Record<string, number>
 
 /**
- * Durable Object backing one entity's rolling distinct-member window. The HTTP
+ * Durable Object backing one key's rolling distinct-member window. The HTTP
  * surface is internal — only {@link VelocityStore} calls it — with one route:
  *   - `POST /bump?member=<id>&window=<ms>` — record the member for `window` ms,
  *     prune lapsed members, and return `{ distinct }` (the live count).
@@ -45,7 +44,7 @@ export class VelocityDurableObject {
    * Record `member` as live for `windowMs`, drop any member whose expiry has
    * passed, persist the pruned map, and return the surviving distinct count. The
    * read-prune-write runs in one serialized invocation on this single-threaded
-   * instance, so concurrent bumps of the same entity cannot lose an update.
+   * instance, so concurrent bumps of the same key cannot lose an update.
    */
   private async bump(member: string, windowMs: number): Promise<Response> {
     const now = Date.now()
@@ -55,7 +54,7 @@ export class VelocityDurableObject {
     }
     members[member] = now + windowMs
     await this.state.storage.put<MemberMap>(RECORD_KEY, members)
-    // Reclaim the instance once the last member lapses, so an entity that goes
+    // Reclaim the instance once the last member lapses, so a key that goes
     // quiet does not leak storage. The alarm re-checks on fire (below).
     const furthest = Math.max(...Object.values(members))
     await this.state.storage.setAlarm(furthest)
@@ -104,10 +103,10 @@ export interface NewDeviceVelocityStore {
 }
 
 /**
- * Host adapter presenting the hot velocity counters over the
- * {@link VelocityDurableObject} binding. Each entity is addressed by
- * `idFromName(scope + ':' + key)`, so a device's fan-out and an IP's velocity
- * route to independent instances.
+ * Host adapter presenting the new-device velocity counters over the
+ * {@link VelocityDurableObject} binding. Each key is addressed by
+ * `idFromName(scope + ':' + key)`, so an IP and a JA4 class route to
+ * independent instances.
  */
 export class VelocityStore implements NewDeviceVelocityStore {
   constructor(private readonly namespace: DurableObjectNamespace) {}
@@ -128,7 +127,7 @@ export class VelocityStore implements NewDeviceVelocityStore {
 
   /**
    * Distinct new devices minted for a JA4 shape `class` within `windowMs` — the
-   * secondary per-JA4-class new-device velocity (HARDEN-002). Namespaced `nvja4:`
+   * secondary per-JA4-class new-device velocity. Namespaced `nvja4:`
    * so a class string can never collide with an `nv:` IP key in the shared store.
    */
   async newDeviceVelocityJa4(
@@ -139,31 +138,7 @@ export class VelocityStore implements NewDeviceVelocityStore {
     return this.bump(`nvja4:${ja4Class}`, visitorId, windowMs)
   }
 
-  /**
-   * Distinct accounts seen on `visitorId` within `windowMs` — the hot-path form
-   * of `device_account_fanout`. Bumps `accountId` and returns the live count.
-   */
-  async deviceAccountFanout(
-    visitorId: string,
-    accountId: string,
-    windowMs: number,
-  ): Promise<number> {
-    return this.bump(`v:${visitorId}`, accountId, windowMs)
-  }
-
-  /**
-   * Distinct accounts seen on `ip` within `windowMs` — the hot-path form of
-   * `ip_account_count`. Bumps `accountId` and returns the live count.
-   */
-  async ipAccountVelocity(
-    ip: string,
-    accountId: string,
-    windowMs: number,
-  ): Promise<number> {
-    return this.bump(`ip:${ip}`, accountId, windowMs)
-  }
-
-  /** Route a bump to the entity's own instance and return its distinct count. */
+  /** Route a bump to the key's own instance and return its distinct count. */
   private async bump(
     scopeKey: string,
     member: string,

@@ -4,23 +4,23 @@
 # rebuilds the vendored WASM from source, installs, builds, and deploys.
 #
 # Usage:
-#   [FP_PROBE_KEY=<key>] scripts/deploy-cf.sh [edge|web|all]   # default: all
+#   scripts/deploy-cf.sh [edge|web|all]   # default: all
 #
 # Env toggles:
-#   FP_PROBE_KEY    baked into the WASM at compile time. Unset ⇒ the source dev
-#                   default (matches the deploy workflows). For a probe-enforced
-#                   deploy set it to the SAME value as the Worker's RUNTIME
-#                   FP_PROBE_KEY secret, so the browser and the edge agree.
 #   DRY_RUN=1       build + `wrangler deploy --dry-run` (edge) / build-only (web);
 #                   no upload, no Cloudflare account needed.
-#   RUN_MIGRATIONS=1  apply the remote D1 migrations before the edge deploy.
+#   RUN_MIGRATIONS=1  apply the database migrations before the edge deploy:
+#                   libSQL when LIBSQL_URL (+ LIBSQL_AUTH_TOKEN) is set, else the
+#                   remote D1.
 #
 # Auth (only for a real upload, not DRY_RUN): wrangler needs either a prior
 #   `wrangler login` (OAuth) OR CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in
 #   the environment.
 #
-# Runtime Worker secrets (FP_SALT_SECRET / FP_PROBE_KEY / FP_SIGNING_KEY) are NOT
-# managed here — set them with `wrangler secret put <NAME>` (see README "Deploy").
+# Runtime Worker secrets are NOT managed here — set them with
+# `wrangler secret put <NAME>` (see README "Deploy"):
+#   FP_SALT_SECRET (required — the Worker refuses to start without it),
+#   FP_ADMIN_KEY, FP_API_KEY, LIBSQL_URL, LIBSQL_AUTH_TOKEN.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,18 +46,6 @@ if [ -z "$DRY" ] && [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
   echo "note: CLOUDFLARE_API_TOKEN not set — wrangler will use its saved 'wrangler login' session (run DRY_RUN=1 to build without uploading)."
 fi
 
-# --- Compile-time probe key ------------------------------------------------
-# Only export when non-empty: an empty FP_PROBE_KEY would bake an empty key
-# (option_env! sees Some("")), which differs from the intended source dev
-# default (option_env! None).
-if [ -n "${FP_PROBE_KEY:-}" ]; then
-  export FP_PROBE_KEY
-  echo "==> WASM probe key: provided via FP_PROBE_KEY"
-else
-  unset FP_PROBE_KEY 2>/dev/null || true
-  echo "==> WASM probe key: unset (source dev default)"
-fi
-
 # --- Build the vendored WASM once into both consumer dirs ------------------
 # Both targets use the identical build; a second pass would only waste time.
 echo "==> build WASM from crates/fp-wasm -> apps/edge/wasm + packages/client/wasm"
@@ -71,8 +59,13 @@ bun install --frozen-lockfile
 
 deploy_edge() {
   if [ -n "${RUN_MIGRATIONS:-}" ] && [ -z "$DRY" ]; then
-    echo "==> [edge] apply remote D1 migrations"
-    (cd apps/edge && bun run cf:remotedb)
+    if [ -n "${LIBSQL_URL:-}" ]; then
+      echo "==> [edge] apply libSQL migrations"
+      (cd apps/edge && DB_TYPE=libsql bun run db:migrate)
+    else
+      echo "==> [edge] apply remote D1 migrations"
+      (cd apps/edge && bun run cf:remotedb)
+    fi
   fi
   if [ -n "$DRY" ]; then
     echo "==> [edge] dry-run (build only, no upload)"

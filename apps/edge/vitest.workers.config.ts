@@ -5,17 +5,17 @@ import {
 import { defineConfig } from 'vitest/config'
 
 // The state suite (`*.workers.test.ts`) runs inside real workerd/miniflare with
-// the wrangler.jsonc bindings live — the nonce Durable Object, the D1 database,
-// and the WASM-loading Worker entry — so the Durable Object burn and the D1
-// recall/persist round-trips are exercised against the actual runtime, not a
-// fake. There is no CF account here, but miniflare needs none (local-only per
-// the campaign ENV LIMIT). The state-free router unit contract stays in the
+// the wrangler.jsonc bindings live — the Durable Objects and the WASM-loading
+// Worker entry — plus high-ceiling `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT` and a local D1 database selected with `DB_TYPE=d1` (the D1
+// block is commented out in wrangler.jsonc, so the pool declares it here). The
+// Durable Object burn and the Worker's D1 recall/persist round-trips are thus
+// exercised against the actual runtime, not a fake. Miniflare needs no
+// Cloudflare account. The router contract and the store queries stay in the
 // Node project (`vitest.node.config.ts`); this is the other half.
 //
-// Vitest 4 / pool-workers 0.18: the worker pool is now wired as the
-// `cloudflareTest(...)` Vite plugin (the old `defineWorkersConfig` +
-// `test.poolOptions.workers` shape was removed). Storage isolation is now
-// per-test-FILE (not per-test), so state suites reset D1 in `beforeEach`.
+// The worker pool is wired as the `cloudflareTest(...)` Vite plugin. Storage
+// isolation is per test FILE (not per test), so state suites reset D1 in
+// `beforeEach`.
 export default defineConfig(async () => {
   const migrations = await readD1Migrations('./drizzle')
   return {
@@ -25,12 +25,27 @@ export default defineConfig(async () => {
         miniflare: {
           // Required by the Workers pool; harmless for this Worker.
           compatibilityFlags: ['nodejs_compat'],
+          // The Worker's database for this pool: a local D1 bound as `DB`.
+          d1Databases: ['DB'],
+          // The Worker requires both rate limiters; bind them with a limit the
+          // suites never reach so the production caps cannot fail a test.
+          ratelimits: {
+            RATE_LIMIT: {
+              namespace_id: '1001',
+              simple: { limit: 100000, period: 60 },
+            },
+            CHALLENGE_RATE_LIMIT: {
+              namespace_id: '1002',
+              simple: { limit: 100000, period: 60 },
+            },
+          },
           // Read at config time, applied by the setup file. `FP_SALT_SECRET`
           // pins the deterministic salt so the cross-stack parity suite
           // (`parity.workers.test.ts`) reproduces the native reference — it MUST
           // equal `salt_secret` in `tests/fixtures/parity.json` (the suite
           // asserts the coupling). In a real deployment this is a Worker Secret.
           bindings: {
+            DB_TYPE: 'd1',
             TEST_MIGRATIONS: migrations,
             FP_SALT_SECRET: 'fp-parity-vector-secret',
           },
