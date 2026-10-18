@@ -1,5 +1,5 @@
 /**
- * Browser entry for the red-team harness. Bundled by `run.sh` (`bun build`) and
+ * Browser entry for the CloakBrowser capture harness. Bundled by `run.sh` (`bun build`) and
  * served to the browser under test via `page.route`; the driver calls
  * `window.__fingerprintdHarness()` and stores the result.
  *

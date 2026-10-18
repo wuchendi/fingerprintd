@@ -1,5 +1,5 @@
 /**
- * In-container driver for the red-team harness. Runs INSIDE the browser
+ * In-container driver for the CloakBrowser capture harness. Runs INSIDE the browser
  * container (CloakBrowser image or the stock Playwright image), never on the
  * host — `run.sh` launches it.
  *
@@ -27,7 +27,7 @@ mkdirSync(outDir, { recursive: true })
 
 const HTML =
   '<!doctype html><html><head><meta charset="utf-8"></head>' +
-  '<body>fingerprintd red-team harness<script type="module" src="/harness.js"></script></body></html>'
+  '<body>fingerprintd capture harness<script type="module" src="/harness.js"></script></body></html>'
 
 async function capture(browser, meta) {
   const page = await browser.newPage()

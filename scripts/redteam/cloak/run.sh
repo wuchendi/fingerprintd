@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — reproducible CloakBrowser vs stock-Chromium capture (red-team harness).
+# run.sh — reproducible CloakBrowser vs stock-Chromium capture (adversarial capture harness).
 #
 # Builds the browser-side harness page (real SDK collector + integrity
 # measurements), then runs it inside two labelled sibling containers:

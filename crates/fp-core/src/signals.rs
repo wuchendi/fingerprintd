@@ -1,4 +1,4 @@
-//! Passive network-signal compute (architecture §4.2 / §4.4 / §6).
+//! Passive network-signal compute (architecture §4.2 / §4.4 / §5).
 //!
 //! Client-reported `components` are forgeable: a headless browser can self-report
 //! any `userAgent` it likes. This module derives the signals a client **cannot**
@@ -13,7 +13,7 @@
 //! reuses it unchanged. The HTTP-layer adapter (`crates/fingerprintd`) pulls the
 //! trusted headers and delegates to [`compute`].
 //!
-//! Three shapes of outcome, mirroring the confidence fusion applied downstream (§6):
+//! Three shapes of outcome, mirroring the confidence fusion applied downstream (fuzzy-matching §6):
 //! - [`TlsConsistency::Consistent`] — UA and TLS stack agree → small boost.
 //! - [`TlsConsistency::Mismatch`] — Chrome UA over a Python/Go TLS stack → strong
 //!   downgrade (the core anti-forgery signal, §4.2).
@@ -80,10 +80,10 @@ const BROWSER_JA4_SHAPES: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// Confidence boost when the UA claim and the observed TLS stack agree — a small
-/// positive nudge toward "real browser" (fuzzy-matching §6, "一致 → 加成").
+/// positive nudge toward "real browser" (fuzzy-matching §6).
 const CONSISTENT_BOOST: f64 = 0.05;
 /// Confidence penalty when the UA claim contradicts the observed TLS stack — the
-/// strong anti-forgery downgrade (fuzzy-matching §6 / architecture §4.2, "不一致 → 大幅下调").
+/// strong anti-forgery downgrade (fuzzy-matching §6 / architecture §4.2).
 const MISMATCH_PENALTY: f64 = 0.5;
 
 /// Coarse IP reputation band surfaced to downstream risk consumers (architecture §5).
@@ -110,7 +110,7 @@ impl IpRisk {
 }
 
 /// Verdict of cross-checking the JS/UA-claimed browser against the passively
-/// observed TLS (JA3/JA4) stack (architecture §4.2 / §6).
+/// observed TLS (JA3/JA4) stack (architecture §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsConsistency {
     /// UA and TLS stack agree — a plausibly real browser (confidence boost).
@@ -147,7 +147,7 @@ impl TlsConsistency {
 }
 
 /// The passive signals extracted for one request (architecture §5 `signals`), fed to the
-/// confidence fusion (§6) — never to the `visitor_id`.
+/// confidence fusion (fuzzy-matching §6) — never to the `visitor_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassiveSignals {
     /// Coarse IP reputation band.

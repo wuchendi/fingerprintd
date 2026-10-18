@@ -1143,7 +1143,7 @@ mod tests {
     async fn identify_rejects_unknown_keys_and_wrong_types_with_400() {
         let router = test_router();
         for extra in [
-            json!({ "challenge_response": {} }),
+            json!({ "unknown_field": {} }),
             json!({ "botd": { "bot": true, "score": 1 } }),
             json!({ "botd": { "kind": "headless_chrome" } }),
             json!({ "integrity": { "canvas": "ok", "fonts": "ok" } }),

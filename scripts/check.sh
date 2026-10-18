@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # check.sh — cross-stack quality gate for fingerprintd.
-# Runs the Rust, WASM, and TypeScript gates in sequence and fails on the
-# first red (lint + typecheck + test + build across every stack).
+# Runs, in sequence, failing on the first red:
+#   - Rust: cargo fmt --check, clippy -D warnings, nextest --all-features,
+#     build --all-targets, cargo deny check
+#   - WASM: cargo test -p fp-wasm, then the edge WASM build (apps/edge/wasm)
+#   - TypeScript (every workspace, from the repo root): frozen bun install,
+#     Biome, typecheck, test, build, and the edge Worker `deploy:dry` bundle
 # Idempotent and self-contained; run from anywhere inside the repo.
 set -euo pipefail
 
@@ -20,25 +24,25 @@ cargo build --all-targets
 cargo deny check
 
 # --- WASM gate -------------------------------------------------------------
-# Covered by --all-features above; run explicitly to guarantee the WASM
-# probe core stays green on its own.
+# Covered by --all-features above; run explicitly to guarantee the edge WASM
+# core stays green on its own.
 echo "==> WASM gate"
 cargo test -p fp-wasm
 
-# --- Vendored WASM ---------------------------------------------------------
-# The TS gate's `bun install` runs the repo-root `prepare` (SDK build), which
-# imports the vendored WASM under packages/client/wasm — build it first (it is a
-# build artifact, not committed).
-echo "==> Vendored WASM build"
+# --- Edge WASM build -------------------------------------------------------
+# The edge Worker bundles, and its tests read, apps/edge/wasm — a build
+# artifact, not committed — so build it before the TS gate. The SDK
+# (packages/client) is pure TypeScript and needs no WASM.
+echo "==> Edge WASM build"
 bash "$ROOT/scripts/build-wasm.sh"
 
 # --- TypeScript gate -------------------------------------------------------
 echo "==> TypeScript gate"
-cd "$ROOT/packages/client"
-bun install
+bun install --frozen-lockfile
 bunx @biomejs/biome check .
 bun run typecheck
 bun run test
 bun run build
+bun run --filter @cdlab/fingerprintd-edge deploy:dry
 
 echo "==> All gates green"

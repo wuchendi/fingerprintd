@@ -239,7 +239,7 @@ tests/
 ```bash
 bash scripts/build-wasm.sh   # from the repo root: builds apps/edge/wasm
 bun install
-bun run lint        # biome check .
+bunx biome check .  # lint (Biome)
 bun run typecheck   # tsc --noEmit
 bun run test        # vitest: node project + workers project (miniflare, DB_TYPE=d1)
 bun run deploy:dry  # wrangler deploy --dry-run (bundles the Worker + .wasm + bindings)
