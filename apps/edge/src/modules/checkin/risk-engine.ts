@@ -13,11 +13,7 @@ import type {
   ThresholdProfile,
 } from '../../config/risk-config'
 import { defaultProfiles } from '../../config/risk-config'
-import type {
-  AssessReason,
-  AssessRequest,
-  AssessResponse,
-} from '../../lib/types'
+import type { AssessInput, AssessReason, AssessResponse } from './assess-types'
 
 /** Human-readable `detail` for each fired reason code. */
 const REASON_DETAIL: Record<ReasonCode, string> = {
@@ -30,15 +26,15 @@ const REASON_DETAIL: Record<ReasonCode, string> = {
 }
 
 /**
- * Score a check-in request into a verdict. Two stages: cheap
+ * Score a check-in into a verdict. Two stages: cheap
  * fingerprintd hard-signals first, then aggregates. Every fired trigger adds its
  * configured weight and appends a reason; the summed risk is clamped to `[0,1]`
  * and banded into a decision/verdict pair.
  */
 export function assess(
-  req: AssessRequest,
+  input: AssessInput,
   agg: Aggregates,
-  cfg: ThresholdProfile = defaultProfiles[req.action],
+  cfg: ThresholdProfile = defaultProfiles[input.action],
 ): AssessResponse {
   const { weights, thresholds, bands } = cfg
   const reasons: AssessReason[] = []
@@ -50,7 +46,7 @@ export function assess(
   }
 
   // Stage 1 — fingerprintd hard signals.
-  const { signals } = req.identify
+  const { signals } = input
   if (!signals.ua_tls_consistent) fire('UA_TLS_MISMATCH')
   if (signals.ip_risk === 'high') fire('DATACENTER_IP')
 
@@ -81,5 +77,5 @@ export function assess(
     verdict = 'human'
   }
 
-  return { decision, verdict, risk, reasons, visitorId: req.identify.visitorId }
+  return { decision, verdict, risk, reasons, visitor_id: input.visitor_id }
 }

@@ -1,15 +1,12 @@
 /**
  * Edge Worker configuration, resolved from the runtime environment.
  *
- * The defaults mirror the native server's `Config::default`
- * (`crates/fingerprintd/src/config.rs`): probe enforcement OFF, response signing
- * OFF, timestamp window OFF, nonce TTL 30s, ±30s skew, so a client works
- * against either unchanged. `FP_SALT_SECRET` has no default: an unset salt
- * throws instead of deriving blocking keys from a public placeholder.
+ * Defaults: nonce TTL 30s, `ts` window ±30s (always enforced), events TTL 3600s,
+ * integrity penalty off, retention off. `FP_SALT_SECRET` has no default: an
+ * unset salt throws instead of deriving blocking keys from a public placeholder.
  *
- * `FP_SALT_SECRET`, `FP_PROBE_KEY`, `FP_SIGNING_KEY`, `FP_ADMIN_KEY`, and
- * `LIBSQL_AUTH_TOKEN` are Worker Secrets; the rest are `[vars]`. Secrets are
- * never embedded.
+ * `FP_SALT_SECRET`, `FP_API_KEY`, `FP_ADMIN_KEY`, and `LIBSQL_AUTH_TOKEN` are
+ * Worker Secrets; the rest are `[vars]`. Secrets are never embedded.
  */
 
 /** Cloudflare Worker environment bindings: string-typed config vars plus the
@@ -42,23 +39,22 @@ export interface Env {
   /** Seeds the deterministic salt + MinHash family so blocking keys are stable
    *  across isolates (Worker Secret). Required: unset/blank ⇒ startup throws. */
   FP_SALT_SECRET?: string
-  /** Pre-shared nonce-probe key (Worker Secret). Empty/unset ⇒ probe OFF. */
-  FP_PROBE_KEY?: string
-  /** Response-signing key (Worker Secret). Empty/unset ⇒ signing OFF. */
-  FP_SIGNING_KEY?: string
-  /** `"1"`/`"true"` enables the request timestamp window. Default OFF. */
-  FP_ENFORCE_TS_WINDOW?: string
-  /** Allowed clock skew in seconds when the timestamp window is on. Default 30. */
+  /** Allowed clock skew of the request `ts` in seconds. Default 30. */
   FP_TS_SKEW_SECS?: string
   /** Nonce lifetime in seconds. Default 30. */
   FP_NONCE_TTL_SECS?: string
-  /** `"1"`/`"true"` trusts edge-injected passive-signal headers. Default OFF. */
-  FP_TRUST_EDGE_HEADERS?: string
+  /** `"1"`/`"true"` lets a `noise` client-integrity verdict lower confidence.
+   *  Default OFF. */
   FP_INTEGRITY_PENALTY_ENABLED?: string
+  /** API key gating the server-side events API and `POST /checkin/assess`
+   *  (Worker Secret). Empty/unset ⇒ those endpoints are disabled. */
+  FP_API_KEY?: string
+  /** Lifetime of a stored identify event in seconds. Default 3600. */
+  FP_EVENT_TTL_SECS?: string
   /** Admin key gating `DELETE /visitor/{id}` GDPR erasure (Worker Secret).
    *  Empty/unset ⇒ the erasure endpoint is DISABLED (returns 404, fail-closed). */
   FP_ADMIN_KEY?: string
-  /** D1 retention window in seconds: templates whose `last_seen` is older than
+  /** Template retention window in seconds: templates whose `last_seen` is older than
    *  this are purged by the scheduled cron. `0`/unset ⇒ retention disabled. */
   FP_RETENTION_SECS?: string
   /** Comma-separated allowed CORS origins for the browser playground, e.g.
@@ -71,25 +67,21 @@ export interface Env {
 export interface EdgeConfig {
   /** Salt/MinHash seed passed to the WASM engine. Always non-empty. */
   saltSecret: string
-  /** Nonce-probe key; `undefined` ⇒ probe verification is skipped (OFF). */
-  probeKey?: string
-  /** Response-signing key; `undefined` ⇒ responses are not signed (OFF). */
-  signingKey?: string
-  /** Whether to enforce the request timestamp window. */
-  enforceTsWindow: boolean
-  /** Allowed skew in milliseconds when the window is on. */
+  /** Allowed skew of the request `ts` in milliseconds. */
   tsSkewMs: number
   /** Nonce lifetime in seconds, advertised as `expires_in`. */
   nonceTtlSecs: number
-  /** Whether edge-injected passive-signal headers are trusted. */
-  trustEdgeHeaders: boolean
   /** Whether a `noise` client-integrity verdict may lower confidence. Off by
    *  default: the band is surfaced-only until its false-positive rate is known. */
   integrityPenaltyEnabled: boolean
   /** Admin key for `DELETE /visitor/{id}` erasure; `undefined` ⇒ endpoint
    *  DISABLED (fail-closed 404). Compared constant-time against the bearer. */
   adminKey?: string
-  /** D1 retention window in milliseconds; `0` ⇒ retention disabled (no purge). */
+  /** API key for the events API and check-in; `undefined` ⇒ disabled. */
+  apiKey?: string
+  /** Lifetime of a stored identify event in milliseconds. */
+  eventTtlMs: number
+  /** Template retention window in milliseconds; `0` ⇒ retention disabled (no purge). */
   retentionMs: number
   /** Check-in retention window in milliseconds; `0` ⇒ disabled (no purge). */
   checkinRetentionMs: number
@@ -139,14 +131,12 @@ export function resolveConfig(env: Env): EdgeConfig {
   }
   return {
     saltSecret,
-    probeKey: secret(env.FP_PROBE_KEY),
-    signingKey: secret(env.FP_SIGNING_KEY),
-    enforceTsWindow: flag(env.FP_ENFORCE_TS_WINDOW),
     tsSkewMs: intVar(env.FP_TS_SKEW_SECS, 30) * 1000,
     nonceTtlSecs: intVar(env.FP_NONCE_TTL_SECS, 30),
-    trustEdgeHeaders: flag(env.FP_TRUST_EDGE_HEADERS),
     integrityPenaltyEnabled: flag(env.FP_INTEGRITY_PENALTY_ENABLED),
     adminKey: secret(env.FP_ADMIN_KEY),
+    apiKey: secret(env.FP_API_KEY),
+    eventTtlMs: intVar(env.FP_EVENT_TTL_SECS, 3600) * 1000,
     retentionMs: intVar(env.FP_RETENTION_SECS, 0) * 1000,
     checkinRetentionMs: intVar(env.CHECKIN_RETENTION_SECS, 0) * 1000,
     corsOrigins: originList(env.FP_CORS_ORIGINS),

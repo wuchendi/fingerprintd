@@ -5,22 +5,22 @@
  * the scoring path. Defaults live in {@link defaultProfiles}.
  */
 
-import type { AssessRequest } from '../lib/types'
+import type { AssessRequest } from '../modules/checkin/assess-types'
 
 /**
  * Aggregate signals the rule engine consumes — the account/device/IP/time
  * relationship state fingerprintd deliberately does not own. Field names match
- * the plan's aggregate keys exactly so the storage layer's query output can be
- * passed straight in via structural typing.
+ * the storage layer's aggregate keys (`AggregateResult`), which the route
+ * reduces to one scalar each.
  */
 export interface Aggregates {
-  /** Distinct accounts seen on this device (visitorId → distinct accountId). */
+  /** Distinct accounts seen on this device (visitor_id → distinct account_id). */
   device_account_fanout: number
-  /** Distinct devices seen on this account (accountId → distinct visitorId). */
+  /** Distinct devices seen on this account (account_id → distinct visitor_id). */
   account_device_count: number
   /** Rate of never-before-seen devices for this account over the last N. */
   account_new_device_rate: number
-  /** Distinct accounts seen from this IP (ip → distinct accountId). */
+  /** Distinct accounts seen from this IP (ip → distinct account_id). */
   ip_account_count: number
   /** Regularity of this account/device's check-in intervals (scripted timing). */
   checkin_interval_regularity: number

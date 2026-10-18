@@ -11,8 +11,8 @@
   // backed Durable Objects + D1 are on the Workers free plan. Worker Secrets,
   // never committed — set via `wrangler secret put` or the deploy workflow's
   // sync: FP_SALT_SECRET (required; the Worker throws without it),
-  // FP_ADMIN_KEY, LIBSQL_URL, LIBSQL_AUTH_TOKEN, plus the optional FP_PROBE_KEY
-  // and FP_SIGNING_KEY.
+  // LIBSQL_URL, LIBSQL_AUTH_TOKEN, plus the optional FP_ADMIN_KEY (erasure) and
+  // FP_API_KEY (events API + check-in).
   "name": "fingerprintd-edge",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-07",
@@ -21,8 +21,7 @@
   // with the [vars] below.
   "keep_vars": true,
   // Non-secret defaults. Secrets are set with `wrangler secret put <NAME>` /
-  // `.dev.vars`, never committed. Probe, signing, and the timestamp window stay
-  // off until their secrets/vars are set; nonce TTL is 30s.
+  // `.dev.vars`, never committed. Nonce TTL and the request `ts` skew are 30s.
   "vars": {
     "FP_NONCE_TTL_SECS": "30",
     "FP_TS_SKEW_SECS": "30",

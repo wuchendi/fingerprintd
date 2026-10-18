@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { VelocityStore } from '../src/lib/do/velocity-do'
 
 // The new-device velocity counter against the real runtime: the
-// VelocityDurableObject maintains a rolling distinct-member window per key,
+// VelocityDurableObject maintains a bounded rolling distinct-member window per IP,
 // exercised through workerd/miniflare with the wrangler.jsonc `VELOCITY`
 // binding live.
 
@@ -17,8 +17,8 @@ function sleep(ms: number): Promise<void> {
 describe('new-device velocity per IP', () => {
   it('counts distinct new devices and does not double-count a repeat', async () => {
     const store = new VelocityStore(env.VELOCITY)
-    // Each NewDevice mints a fresh visitorId, so distinct visitorIds seen for the
-    // IP is the new-device count fp-core bands.
+    // Each new device mints a fresh visitor id, so the distinct ids seen for
+    // the IP are the new-device count the engine bands.
     expect(await store.newDeviceVelocityIp('1.2.3.4', 'v1', MINUTE)).toBe(1)
     expect(await store.newDeviceVelocityIp('1.2.3.4', 'v2', MINUTE)).toBe(2)
     expect(await store.newDeviceVelocityIp('1.2.3.4', 'v1', MINUTE)).toBe(2)
@@ -31,9 +31,16 @@ describe('new-device velocity per IP', () => {
     await store.newDeviceVelocityIp('10.0.0.1', 'v2', MINUTE)
     // A different IP is a different instance, starting from empty.
     expect(await store.newDeviceVelocityIp('10.0.0.2', 'v1', MINUTE)).toBe(1)
-    // The JA4-class scope never collides with a same-named IP key.
-    expect(await store.newDeviceVelocityJa4('10.0.0.1', 'v1', MINUTE)).toBe(1)
   })
+
+  it('caps the live members per IP at 64', async () => {
+    const store = new VelocityStore(env.VELOCITY)
+    let distinct = 0
+    for (let i = 0; i < 70; i++) {
+      distinct = await store.newDeviceVelocityIp('10.0.0.3', `v${i}`, MINUTE)
+    }
+    expect(distinct).toBe(64)
+  }, 30_000)
 })
 
 describe('window expiry', () => {

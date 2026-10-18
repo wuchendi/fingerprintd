@@ -21,19 +21,37 @@ describe('resolveConfig', () => {
   it('trims secrets', () => {
     const config = resolveConfig({
       FP_SALT_SECRET: ' salt ',
-      FP_PROBE_KEY: ' key ',
-      FP_SIGNING_KEY: '\tsign\n',
+      FP_API_KEY: '\tapi\n',
       FP_ADMIN_KEY: ' admin ',
     })
     expect(config.saltSecret).toBe('salt')
-    expect(config.probeKey).toBe('key')
-    expect(config.signingKey).toBe('sign')
+    expect(config.apiKey).toBe('api')
     expect(config.adminKey).toBe('admin')
   })
 
   it('treats a blank optional secret as unset', () => {
-    const config = resolveConfig({ FP_SALT_SECRET: 's', FP_PROBE_KEY: '  ' })
-    expect(config.probeKey).toBeUndefined()
+    const config = resolveConfig({ FP_SALT_SECRET: 's', FP_API_KEY: '  ' })
+    expect(config.apiKey).toBeUndefined()
+  })
+
+  it('applies the defaults', () => {
+    const config = resolveConfig({ FP_SALT_SECRET: 's' })
+    expect(config.tsSkewMs).toBe(30_000)
+    expect(config.nonceTtlSecs).toBe(30)
+    expect(config.eventTtlMs).toBe(3_600_000)
+    expect(config.integrityPenaltyEnabled).toBe(false)
+    expect(config.adminKey).toBeUndefined()
+    expect(config.apiKey).toBeUndefined()
+  })
+
+  it('reads the ts skew and event TTL in seconds', () => {
+    const config = resolveConfig({
+      FP_SALT_SECRET: 's',
+      FP_TS_SKEW_SECS: '5',
+      FP_EVENT_TTL_SECS: '60',
+    })
+    expect(config.tsSkewMs).toBe(5_000)
+    expect(config.eventTtlMs).toBe(60_000)
   })
 })
 

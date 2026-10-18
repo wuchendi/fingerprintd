@@ -46,14 +46,11 @@ if [ -z "$DRY" ] && [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
   echo "note: CLOUDFLARE_API_TOKEN not set — wrangler will use its saved 'wrangler login' session (run DRY_RUN=1 to build without uploading)."
 fi
 
-# --- Build the vendored WASM once into both consumer dirs ------------------
-# Both targets use the identical build; a second pass would only waste time.
-echo "==> build WASM from crates/fp-wasm -> apps/edge/wasm + packages/client/wasm"
+# --- Build the vendored WASM for the edge Worker ---------------------------
+echo "==> build WASM from crates/fp-wasm -> apps/edge/wasm"
 wasm-pack build --target web --out-dir "$ROOT/apps/edge/wasm" crates/fp-wasm
-mkdir -p "$ROOT/packages/client/wasm"
-cp -R "$ROOT/apps/edge/wasm/." "$ROOT/packages/client/wasm/"
 
-# Install once (the root `prepare` builds the SDK now that the WASM exists).
+# Install once (the root `prepare` builds the SDK).
 echo "==> install workspace deps (+ SDK prebuild via prepare)"
 bun install --frozen-lockfile
 

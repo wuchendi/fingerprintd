@@ -9,7 +9,11 @@
 export type { CheckinDeps } from './checkin.routes'
 export { checkinRoutes } from './checkin.routes'
 export type { CheckinStore } from './checkin-state'
-export type { AggregateResult, CheckinEvent } from './checkin-store'
+export type {
+  AggregateResult,
+  CheckinEvent,
+  RecordResult,
+} from './checkin-store'
 export {
   CheckinEventStore,
   INTERVAL_SAMPLE,

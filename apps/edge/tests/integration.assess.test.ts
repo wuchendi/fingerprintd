@@ -1,8 +1,10 @@
 /**
  * End-to-end integration coverage for `POST /checkin/assess`.
  *
- * Drives the full handler -> store -> engine -> response path over the real
- * Hono app from `createApp`, injecting a fake {@link CheckinStore} that returns
+ * Drives the full event lookup -> handler -> store -> engine -> response path
+ * over the real Hono app from `createApp`: each case stores an identify event
+ * carrying the scenario's signals, then assesses it by `request_id`, with a
+ * fake {@link CheckinStore} that returns
  * controlled {@link AggregateResult} values (the store's own D1 query logic has
  * dedicated coverage in `checkin-store.test.ts`). Each representative
  * business scenario asserts the decision/verdict BAND the merged
@@ -19,11 +21,8 @@ import { createApp } from '../src/app'
 import { resolveConfig } from '../src/config'
 import type { ReasonCode, ThresholdProfile } from '../src/config/risk-config'
 import { defaultProfiles } from '../src/config/risk-config'
-import type {
-  AssessRequest,
-  AssessResponse,
-  IdentifyResponse,
-} from '../src/lib/types'
+import type { IdentifyResponse, Signals } from '../src/lib/types'
+import type { AssessResponse } from '../src/modules/checkin/assess-types'
 import type { CheckinStore } from '../src/modules/checkin/checkin-state'
 import type { AggregateResult } from '../src/modules/checkin/checkin-store'
 import {
@@ -33,8 +32,9 @@ import {
 import { fakeStores, zeroAggregateResult } from './helpers/fakes'
 
 // The assess path lives in the merged edge app, so a test builds the FULL edge
-// `Deps` with an injected check-in store. The WASM engine loads once from the
-// vendored bytes (the assess route never touches it, but `Deps` requires it).
+// `Deps` with an injected check-in store and the API key set. The WASM engine
+// loads once from the vendored bytes (the assess route never touches it, but
+// `Deps` requires it).
 beforeAll(() => {
   const wasmPath = fileURLToPath(
     new URL('../wasm/fp_wasm_bg.wasm', import.meta.url).href,
@@ -44,9 +44,12 @@ beforeAll(() => {
 
 /** Build the full edge deps with an injected check-in store. */
 function makeDeps(checkin: CheckinStore): Deps {
-  const config = resolveConfig({ FP_SALT_SECRET: 'test-salt' })
+  const config = resolveConfig({
+    FP_SALT_SECRET: 'test-salt',
+    FP_API_KEY: 'api-secret',
+  })
   return {
-    engine: new EdgeEngine(config),
+    engine: new EdgeEngine(config.saltSecret),
     config,
     ...fakeStores(config.nonceTtlSecs),
     checkin,
@@ -75,54 +78,71 @@ function expected(codes: ReasonCode[]): {
   return { risk, decision: 'allow', verdict: 'human' }
 }
 
-/** A clean pass-through identify verdict; override signals per case. */
-function buildIdentify(
-  overrides: Partial<IdentifyResponse> = {},
-): IdentifyResponse {
-  return {
-    visitorId: 'vis-int',
-    confidence: 0.9,
-    is_new_device: false,
-    decision: 'match',
-    collision_risk: false,
-    signals: { ua_tls_consistent: true, ip_risk: 'low' },
-    ...overrides,
-  }
-}
-
-/** A well-formed assess request; override `identify` per case. */
-function buildBody(overrides: Partial<AssessRequest> = {}): AssessRequest {
-  return {
-    accountId: 'acct-int',
-    action: 'daily_checkin',
-    identify: buildIdentify(),
-    ...overrides,
-  }
+/** The scenario's identify: a stored event with these hard signals. */
+interface Scenario {
+  visitor_id: string
+  signals?: Pick<Signals, 'ua_tls_consistent' | 'ip_risk'>
 }
 
 /** A fake store returning fixed aggregates — the handler still records first,
  *  then reads these back, exercising the real reconcile + scoring path. */
 function storeReturning(agg: AggregateResult): CheckinStore {
   return {
-    record: () => Promise.resolve(),
+    record: (event) =>
+      Promise.resolve({ inserted: true, account_id: event.account_id }),
     getAggregates: () => Promise.resolve(agg),
   }
 }
 
-/** POST a body through the app with an edge IP header, parse the verdict. */
+/** Store the scenario's identify event, assess it through the app, parse
+ *  the verdict. */
 async function assess(
   agg: AggregateResult,
-  body: AssessRequest,
+  scenario: Scenario,
 ): Promise<AssessResponse> {
-  const app = createApp(makeDeps(storeReturning(agg)))
-  const res = await app.request('https://edge.test/checkin/assess', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'cf-connecting-ip': '203.0.113.9',
+  const deps = makeDeps(storeReturning(agg))
+  const identify: IdentifyResponse = {
+    request_id: 'req-int',
+    visitor_id: scenario.visitor_id,
+    confidence: 0.9,
+    decision: 'match',
+    is_new_device: false,
+    collision_risk: false,
+    signals: {
+      ua_tls_consistent: true,
+      ip_risk: 'low',
+      client_integrity: 'unavailable',
+      persona_coherence: 'unknown',
+      new_device_velocity: 'low',
+      automation: 'unknown',
+      template_jump: false,
+      ...scenario.signals,
     },
-    body: JSON.stringify(body),
-  })
+  }
+  await deps.events.put(
+    {
+      request_id: 'req-int',
+      visitor_id: scenario.visitor_id,
+      ip: '203.0.113.9',
+      body: JSON.stringify(identify),
+    },
+    Date.now() + 60_000,
+  )
+  const res = await createApp(deps).request(
+    'https://edge.test/checkin/assess',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer api-secret',
+      },
+      body: JSON.stringify({
+        account_id: 'acct-int',
+        action: 'daily_checkin',
+        request_id: 'req-int',
+      }),
+    },
+  )
   expect(res.status).toBe(200)
   return res.json() as Promise<AssessResponse>
 }
@@ -150,13 +170,13 @@ const HIGH_IP_COUNT: AggregateResult = {
 function expectVerdict(
   json: AssessResponse,
   codes: ReasonCode[],
-  visitorId: string,
+  visitor_id: string,
 ): void {
   const exp = expected(codes)
   expect(json.decision).toBe(exp.decision)
   expect(json.verdict).toBe(exp.verdict)
   expect(json.risk).toBeCloseTo(exp.risk, 10)
-  expect(json.visitorId).toBe(visitorId)
+  expect(json.visitor_id).toBe(visitor_id)
   expect([...json.reasons.map((r) => r.code)].sort()).toEqual([...codes].sort())
   for (const reason of json.reasons) {
     expect(typeof reason.code).toBe('string')
@@ -168,29 +188,23 @@ function expectVerdict(
 
 describe('POST /checkin/assess — integration (handler -> store -> engine)', () => {
   it('clean human -> allow/human, no reasons', async () => {
-    const body = buildBody({
-      identify: buildIdentify({ visitorId: 'vis-clean' }),
-    })
+    const body: Scenario = { visitor_id: 'vis-clean' }
     const json = await assess(zeroAggregateResult(), body)
     expectVerdict(json, [], 'vis-clean')
   })
 
   it('scripted (UA/TLS mismatch + datacenter IP) -> deny/farming', async () => {
-    const body = buildBody({
-      identify: buildIdentify({
-        visitorId: 'vis-scripted',
-        signals: { ua_tls_consistent: false, ip_risk: 'high' },
-      }),
-    })
+    const body: Scenario = {
+      visitor_id: 'vis-scripted',
+      signals: { ua_tls_consistent: false, ip_risk: 'high' },
+    }
     // 0.5 + 0.3 = 0.8 >= deny(0.7).
     const json = await assess(zeroAggregateResult(), body)
     expectVerdict(json, ['UA_TLS_MISMATCH', 'DATACENTER_IP'], 'vis-scripted')
   })
 
   it('device farm, isolated (high fan-out only) -> challenge/suspicious', async () => {
-    const body = buildBody({
-      identify: buildIdentify({ visitorId: 'vis-farm' }),
-    })
+    const body: Scenario = { visitor_id: 'vis-farm' }
     // 0.6: a single strong signal is challenged, not denied.
     const json = await assess(HIGH_FANOUT, body)
     expect(json.decision).toBe('challenge')
@@ -198,21 +212,17 @@ describe('POST /checkin/assess — integration (handler -> store -> engine)', ()
   })
 
   it('device farm on datacenter egress (fan-out + high IP) -> deny/farming', async () => {
-    const body = buildBody({
-      identify: buildIdentify({
-        visitorId: 'vis-farm-dc',
-        signals: { ua_tls_consistent: true, ip_risk: 'high' },
-      }),
-    })
+    const body: Scenario = {
+      visitor_id: 'vis-farm-dc',
+      signals: { ua_tls_consistent: true, ip_risk: 'high' },
+    }
     // 0.6 + 0.3 = 0.9 >= deny(0.7) — how a real device farm reaches deny.
     const json = await assess(HIGH_FANOUT, body)
     expectVerdict(json, ['DEVICE_FARM', 'DATACENTER_IP'], 'vis-farm-dc')
   })
 
   it('fingerprint reset (high new-device rate only) -> challenge/suspicious', async () => {
-    const body = buildBody({
-      identify: buildIdentify({ visitorId: 'vis-reset' }),
-    })
+    const body: Scenario = { visitor_id: 'vis-reset' }
     // 0.4 >= challenge(0.35), < deny(0.7).
     const json = await assess(HIGH_NEW_DEVICE_RATE, body)
     expect(json.decision).toBe('challenge')
@@ -220,9 +230,7 @@ describe('POST /checkin/assess — integration (handler -> store -> engine)', ()
   })
 
   it('shared-egress benign (high IP count only) -> allow, never deny', async () => {
-    const body = buildBody({
-      identify: buildIdentify({ visitorId: 'vis-nat' }),
-    })
+    const body: Scenario = { visitor_id: 'vis-nat' }
     // 0.3 < challenge(0.35): conservative on corp/campus NAT.
     const json = await assess(HIGH_IP_COUNT, body)
     // KEY PROPERTY: a benign shared egress must not be denied.

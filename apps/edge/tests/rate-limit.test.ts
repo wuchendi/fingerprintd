@@ -24,9 +24,12 @@ function makeDeps(
   rateLimiter: FakeRateLimiter,
   challengeRateLimiter = new FakeRateLimiter(),
 ): Deps {
-  const config = resolveConfig({ FP_SALT_SECRET: 'test-salt' })
+  const config = resolveConfig({
+    FP_SALT_SECRET: 'test-salt',
+    FP_API_KEY: 'api-secret',
+  })
   return {
-    engine: new EdgeEngine(config),
+    engine: new EdgeEngine(config.saltSecret),
     config,
     ...fakeStores(config.nonceTtlSecs),
     rateLimiter,
@@ -37,7 +40,11 @@ function makeDeps(
 const post = (path: string, headers: Record<string, string> = {}) =>
   new Request(`https://edge.test${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'Bearer api-secret',
+      ...headers,
+    },
     body: JSON.stringify({}),
   })
 

@@ -42,8 +42,8 @@ export default defineConfig(async () => {
           // Read at config time, applied by the setup file. `FP_SALT_SECRET`
           // pins the deterministic salt so the cross-stack parity suite
           // (`parity.workers.test.ts`) reproduces the native reference — it MUST
-          // equal `salt_secret` in `tests/fixtures/parity.json` (the suite
-          // asserts the coupling). In a real deployment this is a Worker Secret.
+          // equal `salt_secret` in `crates/fingerprintd/tests/fixtures/
+          // parity.json` (the suite asserts the coupling). In a real deployment this is a Worker Secret.
           bindings: {
             DB_TYPE: 'd1',
             TEST_MIGRATIONS: migrations,

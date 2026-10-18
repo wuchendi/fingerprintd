@@ -1,42 +1,20 @@
 /**
- * Wire types for the fingerprintd HTTP surface, as served by this edge Worker.
+ * Wire types for the fingerprintd HTTP surface (Contract v1), as served by this
+ * edge Worker, plus the WASM engine's reply shapes.
  *
- * These MUST stay byte-compatible with the shipped Axum server
- * (`crates/fingerprintd/src/lib.rs`) and the browser SDK
- * (`packages/client/src/types.ts`) so a client works against EITHER deployment. The
- * server renames `visitor_id` -> `visitorId` via serde; keep that here too.
+ * The HTTP shapes are the same snake_case JSON the native Axum server
+ * (`crates/fingerprintd/src/lib.rs`) serves, so a client works against either
+ * deployment.
  */
 
-/** Advertised nonce-probe transform. Present in `GET /challenge` only when
- *  the Worker has a probe key configured; omitted otherwise. The client computes
- *  `encoding(alg(shared_key, input))` — `hex(HMAC-SHA256(key, nonce))` — and
- *  echoes it as {@link IdentifyRequest.probe}. The shared key is never advertised. */
-export interface ProbeDescriptor {
-  /** Keyed-hash algorithm, e.g. `HMAC-SHA256`. */
-  alg: string
-  /** Transform input identifier — currently the string `nonce`. */
-  input: string
-  /** Output encoding of the computed tag, e.g. `hex`. */
-  encoding: string
-}
+/** A device verdict from the weighted engine (fuzzy-matching §5.4). */
+export type Decision = 'match' | 'review' | 'new_device'
 
-/** Active challenge descriptor (canvas/audio seeded with the nonce). */
-export interface ChallengeProbe {
-  /** Nonce used to seed the rendered challenge (equals the top-level nonce). */
-  seed: string
-  /** Probe targets to render, e.g. `['canvas', 'audio']`. */
-  targets: string[]
-  /** Nonce-probe transform to compute; present only under probe enforcement. */
-  verify?: ProbeDescriptor
-}
+/** A coarse three-level band (IP risk, new-device velocity). */
+export type Band = 'low' | 'medium' | 'high'
 
-/** Client-side collection plan carried in a challenge response. */
-export interface Collect {
-  /** Stable probe identifiers to gather (e.g. userAgent, timezone). */
-  stable: string[]
-  /** Nonce-seeded active challenge. */
-  challenge: ChallengeProbe
-}
+/** One client-side known-answer integrity probe verdict. */
+export type IntegrityLabel = 'ok' | 'noise' | 'unavailable'
 
 /** `GET /challenge` response body (architecture §5). */
 export interface ChallengeResponse {
@@ -44,168 +22,132 @@ export interface ChallengeResponse {
   nonce: string
   /** Nonce lifetime in seconds. */
   expires_in: number
-  /** Client-side collection plan. */
-  collect: Collect
+}
+
+/** Client-side bot-detection verdict carried on `identify`. */
+export interface Botd {
+  bot: boolean
+  kind?: string | null
+}
+
+/** Known-answer client integrity probe verdicts, top-level on `identify` so
+ *  they never enter the matching input. */
+export interface Integrity {
+  canvas?: IntegrityLabel
+  webgl?: IntegrityLabel
+  audio?: IntegrityLabel
+  rect?: IntegrityLabel
 }
 
 /**
- * `POST /identify` request body.
- *
- * Only `nonce` and `stable_components` are always meaningful. The Worker reads
- * `probe` and `ts` only when the matching enforcement is configured;
- * otherwise they are ignored. The request schema is strict: any unknown
- * top-level field is REJECTED with `400` — there is no forward-compat
- * `challenge_response` tolerance.
+ * `POST /identify` request body. Closed at every level: an unknown key here or
+ * inside `components` / `botd` / `integrity`, or a wrongly-typed value, is a
+ * `400`.
  */
 export interface IdentifyRequest {
   /** The nonce previously minted by `GET /challenge`. */
   nonce: string
-  /** Client timestamp in Unix milliseconds. Checked only when the Worker's
-   *  timestamp window is enforced; a missing/out-of-window value then yields 401. */
-  ts?: number
-  /** Nonce-probe response `hex(HMAC-SHA256(shared_key, nonce))`. Verified
-   *  only when the Worker has a probe key; a missing/wrong value then yields 401. */
-  probe?: string
-  /** Raw stable components (no nonce mixed in). Arbitrary JSON — the engine
-   *  scores these but never derives an id from the client's copy. */
-  stable_components: Record<string, unknown>
-  /** Known-answer client integrity probe verdicts (`canvas` / `webgl` / `audio`
-   *  / `rect`, each `ok` | `noise` | `unavailable`), top-level by design so they
-   *  never enter the matching input. Optional; absent ⇒ neutral. */
-  integrity?: Record<string, unknown>
+  /** Client timestamp in Unix milliseconds; outside `±FP_TS_SKEW_SECS` ⇒ 401. */
+  ts: number
+  /** The collected components of the closed schema (validated by the engine). */
+  components: Record<string, unknown>
+  /** The client-reported user agent the UA↔TLS and persona checks read. */
+  user_agent?: string
+  /** Client-side bot-detection verdict, surfaced as `signals.automation`. */
+  botd?: Botd
+  /** Client integrity probe verdicts, surfaced as `signals.client_integrity`. */
+  integrity?: Integrity
 }
 
-/** Passive network-signal risk summary (architecture §5). */
+/** Risk signals surfaced on `identify` (architecture §5). None of them moves
+ *  the `visitor_id`. */
 export interface Signals {
-  /** Whether the UA and edge-observed TLS fingerprint agree. */
+  /** Whether the claimed UA and the edge-observed TLS stack agree. */
   ua_tls_consistent: boolean
-  /** Coarse IP risk band, e.g. `low` / `high`. */
-  ip_risk: string
-  /** Fused client-integrity verdict (`ok` / `noise` / `unavailable`) from the
-   *  request's top-level `integrity` probes via the shared WASM
-   *  `client_integrity` export — `noise` is the footprint of a
-   *  fingerprint-noising browser. Surfaced always; moves confidence only when
-   *  `FP_INTEGRITY_PENALTY_ENABLED`. Optional for the same assess pass-through
-   *  reason as the velocity bands. */
-  client_integrity?: string
-  /** UA-claimed OS family vs the collected `fonts` set (`consistent` /
-   *  `mismatch` / `unknown`) via the shared WASM `persona_coherence_label`
-   *  export — `mismatch` is a borrowed persona (Windows UA, no Windows core
-   *  fonts). Surfaced-only; never moves confidence. Optional for the assess
-   *  pass-through. */
-  persona_coherence?: string
-  /** Cross-session new-device production-rate band for the client IP
-   *  (`low` / `medium` / `high`). The `/identify` response always populates it;
-   *  the edge is stateless and scores one request at a time with no cross-session
-   *  velocity store, so it always reports the neutral `'low'` — the native server
-   *  computes the real band. This mirrors how the edge treats an empty u_i/m_i
-   *  store as neutral. Optional so the check-in `assess` pass-through — which does
-   *  not consume it — can carry an identify body that omits it. */
-  new_device_velocity?: string
-  /** Secondary cross-session new-device band keyed on the coarse JA4 shape
-   *  **class** (`low` / `medium` / `high`), mirroring the native
-   *  `new_device_velocity_ja4`. Surfaced additively alongside
-   *  {@link Signals.new_device_velocity}; computed edge-side from the same
-   *  Durable Object on a `new_device` verdict when a trusted JA4 is present,
-   *  else the neutral `'low'`. Surface-only — it never moves confidence. Optional
-   *  for the same pass-through reason as {@link Signals.new_device_velocity}. */
-  new_device_velocity_ja4?: string
-}
-
-/**
- * Passive-signal verdict returned by the shared WASM `passive_signals` export
- * (`fingerprintd::signals`). The host maps the boolean + band into {@link Signals} and
- * fuses `confidence_adjustment` into `/identify` confidence — never the visitorId.
- */
-export interface PassiveVerdict {
-  /** Whether the UA claim and the edge-observed TLS stack agree (false ⇒ forgery). */
-  ua_tls_consistent: boolean
-  /** Coarse IP risk band, `low` / `medium` / `high`. */
-  ip_risk: string
-  /** Signed confidence delta: positive boost, negative downgrade, `0` degraded. */
-  confidence_adjustment: number
-}
-
-/**
- * Reply of the shared WASM `client_integrity` export
- * (`fingerprintd::signals::ClientIntegrity`): the fused verdict plus the confidence
- * delta (`0` unless the penalty is enabled and the verdict is `noise`).
- */
-export interface IntegrityVerdict {
-  client_integrity: string
-  confidence_adjustment: number
+  /** Coarse IP risk band. */
+  ip_risk: Band
+  /** Fused verdict of the client's integrity probes; `noise` is the footprint
+   *  of a fingerprint-noising browser. Moves confidence only when
+   *  `FP_INTEGRITY_PENALTY_ENABLED`. */
+  client_integrity: IntegrityLabel
+  /** UA-claimed OS family vs the collected `fonts`. Surfaced-only. */
+  persona_coherence: 'consistent' | 'mismatch' | 'unknown'
+  /** Distinct new devices minted for the client IP in the trailing window,
+   *  banded. A `medium`/`high` band lowers a new device's confidence. */
+  new_device_velocity: Band
+  /** Client-side bot-detection verdict. Surfaced-only. */
+  automation: 'detected' | 'not_detected' | 'unknown'
+  /** Whether a match was downgraded to `review` because too many
+   *  high-stability components changed. */
+  template_jump: boolean
 }
 
 /** `POST /identify` success body (architecture §5). */
 export interface IdentifyResponse {
-  /** Stable device identifier (server-computed; serde-renamed from visitor_id). */
-  visitorId: string
-  /** Fused match confidence in `[0.0, 1.0]`. This is DECISION confidence, not
-   *  identity trust: a first-ever new device can carry a HIGH confidence yet
-   *  is entirely unestablished. Consumers must key trust off `is_new_device` /
-   *  `decision`, never off `confidence` alone. */
+  /** Random 128-bit id of this identify call (32 lowercase hex chars). */
+  request_id: string
+  /** Device identifier: the matched/suspected visitor, or a freshly minted one. */
+  visitor_id: string
+  /** Fused match confidence in `[0, 1]`. This is DECISION confidence, not
+   *  identity trust: a first-ever new device can carry a high confidence yet is
+   *  unestablished. Key trust off `is_new_device` / `decision`. */
   confidence: number
+  /** Verdict from the weighted engine. */
+  decision: Decision
   /** Whether this device was newly recorded. */
   is_new_device: boolean
-  /** Verdict from the weighted engine. */
-  decision: 'match' | 'review' | 'new_device'
   /** Set when a runner-up candidate also cleared the match threshold. */
   collision_risk: boolean
-  /** Passive network-signal risk summary. */
+  /** Risk signals for downstream consumers. */
   signals: Signals
 }
 
 /**
- * The raw verdict returned by the WASM engine's `score` (snake_case, from
- * `fingerprintd::fuzzy::MatchOutcome`). The host maps it into {@link IdentifyResponse},
- * dropping the diagnostic-only `score` / `compared_components` fields and adding
- * the host-owned `signals`.
+ * The salted stored form of a device (`fingerprintd::fuzzy::StoredComponents`):
+ * an object keyed by component name holding only salted hashes / numerics.
+ * Opaque to the host — it is persisted and handed back to the engine verbatim.
+ */
+export type StoredComponents = Record<string, unknown>
+
+/** Reply of the WASM `passive_signals` export (`fingerprintd::signals`). */
+export interface PassiveVerdict {
+  /** Whether the UA claim and the edge-observed TLS stack agree. */
+  ua_tls_consistent: boolean
+  /** Coarse IP risk band. */
+  ip_risk: Band
+  /** Signed confidence delta: positive boost, negative downgrade, `0` degraded. */
+  confidence_adjustment: number
+}
+
+/** Reply of the WASM `client_integrity` export: the fused verdict plus its
+ *  confidence delta (`0` unless the penalty is enabled and the verdict is
+ *  `noise`). */
+export interface IntegrityVerdict {
+  client_integrity: IntegrityLabel
+  confidence_adjustment: number
+}
+
+/**
+ * Reply of the WASM engine's `score`: the verdict plus what the host persists.
+ *   - `match`      — `visitor_id` is the matched candidate; `template` is its
+ *                    stored template drifted toward this observation.
+ *   - `new_device` — `visitor_id` is `null` (the host mints one); `template` is
+ *                    `probe_stored`.
+ *   - `review`     — `visitor_id` is the suspected candidate; `template` is
+ *                    `null` and nothing is persisted.
+ * `template_blocking_keys` are the keys to index `template` under (`null` with
+ * it).
  */
 export interface ScoreOutcome {
-  visitor_id: string
+  decision: Decision
+  visitor_id: string | null
   is_new_device: boolean
-  decision: 'match' | 'review' | 'new_device'
   confidence: number
   score: number | null
   compared_components: number
   collision_risk: boolean
-}
-
-/**
- * `POST /checkin/assess` request body.
- *
- * `accountId` is the core new dimension: the business identity the caller wants
- * scored for check-in farming. `identify` is the fingerprintd verdict the caller
- * already obtained and passes through. IP and timestamp are observed edge-side
- * (never client-reported), so they are deliberately NOT fields here.
- */
-export interface AssessRequest {
-  /** Business identity being assessed — the core new dimension. */
-  accountId: string
-  /** Scenario tag selecting a threshold profile. MVP: this value only. */
-  action: 'daily_checkin'
-  /** fingerprintd identify verdict, obtained and passed through by the caller. */
-  identify: IdentifyResponse
-}
-
-/** A single reason contributing to an {@link AssessResponse} decision. */
-export interface AssessReason {
-  /** Stable machine code for the reason, e.g. `NEW_DEVICE`. */
-  code: string
-  /** Human-readable explanation for logs/debugging. */
-  detail: string
-}
-
-/** `POST /checkin/assess` success body. */
-export interface AssessResponse {
-  /** Gate action the caller should take. */
-  decision: 'allow' | 'challenge' | 'deny'
-  /** Interpreted risk label. */
-  verdict: 'human' | 'suspicious' | 'farming'
-  /** Continuous risk score in `[0.0, 1.0]`. */
-  risk: number
-  /** Ordered reasons that produced the decision. */
-  reasons: AssessReason[]
-  /** The device identifier carried through from {@link IdentifyResponse}. */
-  visitorId: string
+  template_jump: boolean
+  probe_stored: StoredComponents
+  template: StoredComponents | null
+  template_blocking_keys: string[] | null
 }

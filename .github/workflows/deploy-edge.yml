@@ -51,10 +51,6 @@ jobs:
 
       # Build the vendored WASM from source so the deployed Worker ships a
       # reproducible artifact (the WASM is a build output, not committed).
-      #
-      # MUST run before `bun install`: the repo-root `prepare` script builds the
-      # `@cdlab/fingerprintd` SDK on install, which imports the vendored
-      # glue under `packages/client/wasm` — so we materialise both dirs first.
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,15 +64,10 @@ jobs:
         with:
           tool: wasm-pack
 
-      - name: Build vendored WASM (crates/fp-wasm -> apps/edge/wasm + packages/client/wasm)
+      - name: Build vendored WASM (crates/fp-wasm -> apps/edge/wasm)
         # `--out-dir` is resolved relative to the CRATE dir — pass an ABSOLUTE
-        # path, else it lands in `crates/fp-wasm/apps/edge/wasm`. The client copy
-        # only exists so the root `prepare` SDK build succeeds during install; the
-        # deployed Worker consumes `apps/edge/wasm`.
-        run: |
-          wasm-pack build --target web --out-dir "$GITHUB_WORKSPACE/apps/edge/wasm" crates/fp-wasm
-          mkdir -p "$GITHUB_WORKSPACE/packages/client/wasm"
-          cp -R "$GITHUB_WORKSPACE/apps/edge/wasm/." "$GITHUB_WORKSPACE/packages/client/wasm/"
+        # path, else it lands in `crates/fp-wasm/apps/edge/wasm`.
+        run: wasm-pack build --target web --out-dir "$GITHUB_WORKSPACE/apps/edge/wasm" crates/fp-wasm
 
       # Bun workspace install from the repo root (one lockfile for both packages).
       - name: Install dependencies

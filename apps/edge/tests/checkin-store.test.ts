@@ -1,4 +1,5 @@
 import { createClient } from '@libsql/client'
+import { count } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/libsql'
 import { migrate } from 'drizzle-orm/libsql/migrator'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -22,14 +23,14 @@ const MINUTE = 60 * 1000
 // A fixed "now" so every window boundary in the assertions is exact.
 const NOW = 1_000_000_000_000
 
-/** Seed one event; `ts` defaults to NOW. */
+/** Seed one event under a fresh request id; `ts` defaults to NOW. */
 function ev(
-  accountId: string,
-  visitorId: string,
+  account_id: string,
+  visitor_id: string,
   ip: string,
   ts: number = NOW,
 ): CheckinEvent {
-  return { accountId, visitorId, ip, ts }
+  return { request_id: crypto.randomUUID(), account_id, visitor_id, ip, ts }
 }
 
 async function seed(
@@ -236,6 +237,29 @@ describe('batch_clustering (live minute burst)', () => {
     expect(agg.batch_clustering.device).toBe(3)
     // burstip: 3 in-bucket (burstdev x2 + otherdev x1); the pre-bucket one excluded.
     expect(agg.batch_clustering.ip).toBe(3)
+  })
+})
+
+describe('record', () => {
+  it('records one check-in per request id', async () => {
+    const store = new CheckinEventStore(db)
+    const first = ev('acct', 'v1', 'ip1', NOW - HOUR)
+    expect(await store.record(first)).toEqual({
+      inserted: true,
+      account_id: 'acct',
+    })
+    // A replay of the same identify under another account records nothing
+    // and reports the account it was first recorded for.
+    expect(
+      await store.record({
+        ...ev('other', 'v1', 'ip1'),
+        request_id: first.request_id,
+      }),
+    ).toEqual({ inserted: false, account_id: 'acct' })
+    const [row] = await db.select({ n: count() }).from(schema.checkinEvents)
+    expect(row?.n).toBe(1)
+    const agg = await store.getAggregates('acct', 'v1', 'ip1', NOW)
+    expect(agg.device_account_fanout.h24).toBe(1)
   })
 })
 

@@ -1,22 +1,32 @@
 /**
- * Check-in domain route: the anti-farming decision layer, split out of the
- * monolithic `app.ts` into its own Hono sub-router.
- *   - `POST /checkin/assess` — score a business `accountId` + a pre-obtained
- *     fingerprintd verdict into an allow/challenge/deny gate.
+ * Check-in domain route: the anti-farming decision layer.
+ *   - `POST /checkin/assess` — score a business `account_id` on a past identify
+ *     (named by `request_id`) into an allow/challenge/deny gate.
  *
- * Independent of `/identify` — the caller passes through an already-obtained
- * identify body. `ip`/`ts` are observed edge-side (never from the body); the
- * event is recorded BEFORE the aggregates are read so this check-in is
- * reflected. Dependencies are injected ({@link CheckinDeps}) so the router is
+ * Server-to-server and `FP_API_KEY`-gated like the events API: no key
+ * configured ⇒ `404`; missing/wrong bearer ⇒ `401`. The device id, signals and
+ * client IP all come from the stored identify event (the caller is the
+ * customer backend, so its own `cf-connecting-ip` is never read); an unknown
+ * or expired `request_id` is a `404`. The check-in is recorded (once per
+ * `request_id`) BEFORE the aggregates are read so it is reflected. A
+ * `request_id` already assessed for a different `account_id` is a `409` and
+ * nothing is scored; the same account replaying it is re-scored from the
+ * aggregates, which already count it once.
+ * Dependencies are injected ({@link CheckinDeps}) so the router is
  * unit-testable without the Workers runtime.
  */
 
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import * as z from 'zod'
+import type { EdgeConfig } from '../../config'
 import type { Aggregates } from '../../config/risk-config'
 import { defaultProfiles } from '../../config/risk-config'
-import type { AssessRequest } from '../../lib/types'
+import { bearerAuthorized } from '../../lib/auth'
+import { requireJson } from '../../lib/http'
+import type { EventLog } from '../../lib/state'
+import type { IdentifyResponse } from '../../lib/types'
+import type { AssessRequest } from './assess-types'
 import type { CheckinStore } from './checkin-state'
 import type { AggregateResult } from './checkin-store'
 import { assess } from './risk-engine'
@@ -24,70 +34,73 @@ import { assess } from './risk-engine'
 /** The check-in routes' slice of the injected deps. */
 export interface CheckinDeps {
   checkin: CheckinStore
+  events: EventLog
+  config: EdgeConfig
 }
 
-/** The edge header carrying the connecting IP, injected by Cloudflare. Observed
- *  edge-side and never client-supplied. */
-const CF_CONNECTING_IP = 'cf-connecting-ip'
-
-/**
- * `POST /checkin/assess` request body. `.strict()` at the top level REJECTS any
- * unknown key — a body carrying edge-observed `ip`/`ts` is a `400`, since those
- * are observed edge-side and never client-supplied. `identify` is `.loose()` so
- * the full pass-through `IdentifyResponse` (confidence, decision, …) is accepted
- * while only the load-bearing `visitorId` / `signals` are validated.
- */
+/** `POST /checkin/assess` request body, closed: any unknown key is a `400`. */
 const assessSchema = z
   .object({
-    accountId: z.string().min(1),
+    account_id: z.string().min(1),
     action: z.literal('daily_checkin'),
-    identify: z
-      .object({
-        visitorId: z.string().min(1),
-        signals: z.object({
-          ua_tls_consistent: z.boolean(),
-          ip_risk: z.enum(['low', 'medium', 'high']),
-        }),
-      })
-      .loose(),
+    request_id: z.string(),
   })
-  .strict()
+  .strict() satisfies z.ZodType<AssessRequest>
 
 /** Build the check-in domain sub-router over the injected {@link CheckinDeps}. */
 export function checkinRoutes(deps: CheckinDeps): Hono {
   const app = new Hono()
 
-  // Check-in anti-farming decision layer: score a business `accountId` + the
-  // fingerprintd verdict into an allow/challenge/deny gate. Independent of
-  // `/identify` — the caller passes through an already-obtained identify body.
-  // `ip`/`ts` are observed edge-side (never from the body); the event is
-  // recorded BEFORE the aggregates are read so this check-in is reflected.
-  app.post('/checkin/assess', zValidator('json', assessSchema), async (c) => {
-    const req = c.req.valid('json')
-    const { accountId, identify } = req
+  app.post(
+    '/checkin/assess',
+    async (c, next) => {
+      const { apiKey } = deps.config
+      if (!apiKey) return c.body(null, 404)
+      if (!bearerAuthorized(c.req.header('authorization'), apiKey)) {
+        return c.body(null, 401)
+      }
+      await next()
+    },
+    requireJson,
+    zValidator('json', assessSchema, (result) => {
+      if (!result.success) return new Response(null, { status: 400 })
+    }),
+    async (c) => {
+      const req = c.req.valid('json')
+      const ts = Date.now()
+      const event = await deps.events.get(req.request_id, ts)
+      if (!event) return c.body(null, 404)
 
-    const ip = c.req.raw.headers.get(CF_CONNECTING_IP)?.trim() ?? ''
-    const ts = Date.now()
-
-    await deps.checkin.record({
-      accountId,
-      visitorId: identify.visitorId,
-      ip,
-      ts,
-    })
-    const agg = await deps.checkin.getAggregates(
-      accountId,
-      identify.visitorId,
-      ip,
-      ts,
-    )
-    const result = assess(
-      req as unknown as AssessRequest,
-      toAggregates(agg),
-      defaultProfiles[req.action],
-    )
-    return c.json(result)
-  })
+      const identify = JSON.parse(event.body) as IdentifyResponse
+      const ip = event.ip ?? ''
+      const recorded = await deps.checkin.record({
+        request_id: req.request_id,
+        account_id: req.account_id,
+        visitor_id: identify.visitor_id,
+        ip,
+        ts,
+      })
+      if (!recorded.inserted && recorded.account_id !== req.account_id) {
+        return c.body(null, 409)
+      }
+      const agg = await deps.checkin.getAggregates(
+        req.account_id,
+        identify.visitor_id,
+        ip,
+        ts,
+      )
+      const result = assess(
+        {
+          action: req.action,
+          visitor_id: identify.visitor_id,
+          signals: identify.signals,
+        },
+        toAggregates(agg),
+        defaultProfiles[req.action],
+      )
+      return c.json(result)
+    },
+  )
 
   return app
 }
