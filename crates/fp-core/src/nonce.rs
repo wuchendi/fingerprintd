@@ -6,13 +6,19 @@
 //! is rejected. This makes a captured `identify` payload unreplayable.
 
 use std::{
-    collections::HashMap,
-    sync::{Mutex, PoisonError},
+    collections::{HashMap, VecDeque},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use rand::{Rng, rng};
+
+/// Default cap on entries held by [`InMemoryNonceStore::new`].
+pub const DEFAULT_MAX_LIVE: usize = 1_000_000;
 
 /// Result of attempting to consume a nonce.
 ///
@@ -26,18 +32,15 @@ pub enum NonceOutcome {
     Expired,
     /// The nonce was already consumed once (replay attempt).
     Reused,
-    /// The nonce was never issued by this store.
+    /// The nonce was never issued by this store, or was reaped or evicted.
     Unknown,
 }
 
 /// Abstraction over a nonce backing store.
 ///
-/// The in-memory [`InMemoryNonceStore`] is the P0 implementation. A
-/// distributed backend lives behind the same contract:
-/// `// TODO(P2): RedisNonceStore` — a Redis-backed adapter keying nonces with a
-/// native TTL and an atomic set-if-unused, so replay protection holds across
-/// multiple service instances. It is intentionally not implemented here (no
-/// `redis` dependency, and tests must not require a running server).
+/// [`InMemoryNonceStore`] covers a single instance. Replay protection across
+/// multiple service instances needs a shared backend (e.g. Redis with native
+/// TTLs and an atomic set-if-unused) implementing this same contract.
 // `async_trait` expands each method to a boxed future with a bare `#[must_use]`
 // on top of the already-must_use `Pin<Box<dyn Future>>`; the lint fires inside
 // the macro output and cannot be fixed at the call site.
@@ -60,25 +63,63 @@ struct Entry {
     used: bool,
 }
 
-/// In-memory [`NonceStore`]: a `Mutex`-guarded map with per-entry expiry.
+/// Entry map plus its insertion-ordered expiry queue.
 ///
-/// Suitable for a single instance (P0). Horizontal scaling requires the shared
-/// Redis backend noted on [`NonceStore`].
+/// Every map key has exactly one queue element and vice versa: entries leave
+/// the map only when their queue element is popped (reaped or evicted).
+/// Consumed entries stay until then so a replay reads `Reused`.
+#[derive(Debug, Default)]
+struct State {
+    /// nonce -> lifecycle entry.
+    entries: HashMap<String, Entry>,
+    /// `(expires_at, nonce)` in issue order, oldest at the front.
+    queue: VecDeque<(Instant, String)>,
+}
+
+/// In-memory [`NonceStore`]: a `Mutex`-guarded map with a bounded,
+/// insertion-ordered expiry queue.
+///
+/// Each issue reaps expired entries from the queue front only (amortized
+/// O(1), no full-map scan), then evicts the oldest entries while the store is
+/// at `max_live`. Because `issue_with_ttl` accepts per-call TTLs, the queue is
+/// ordered by issue time, not strictly by expiry: a longer-lived entry at the
+/// front holds already-expired entries behind it until it expires or is
+/// evicted. Those entries still consume as `Expired`, and memory stays bounded
+/// by `max_live` regardless.
 #[derive(Debug)]
 pub struct InMemoryNonceStore {
     /// Default TTL applied by [`InMemoryNonceStore::issue`].
     ttl: Duration,
-    /// nonce -> lifecycle entry.
-    entries: Mutex<HashMap<String, Entry>>,
+    /// Maximum number of entries held at once (at least 1).
+    max_live: usize,
+    /// Map and expiry queue.
+    state: Mutex<State>,
+    /// Total entries evicted by the capacity cap before expiry.
+    evicted: AtomicU64,
 }
 
 impl InMemoryNonceStore {
-    /// Create a store whose issued nonces live for `ttl`.
+    /// Create a store whose issued nonces live for `ttl`, holding at most
+    /// [`DEFAULT_MAX_LIVE`] entries.
     pub fn new(ttl: Duration) -> Self {
+        Self::with_capacity(ttl, DEFAULT_MAX_LIVE)
+    }
+
+    /// Create a store whose issued nonces live for `ttl`, holding at most
+    /// `max_live` entries (clamped to at least 1). Past the cap the oldest
+    /// entries are evicted and consume as [`NonceOutcome::Unknown`].
+    pub fn with_capacity(ttl: Duration, max_live: usize) -> Self {
         Self {
             ttl,
-            entries: Mutex::new(HashMap::new()),
+            max_live: max_live.max(1),
+            state: Mutex::new(State::default()),
+            evicted: AtomicU64::new(0),
         }
+    }
+
+    /// Total entries evicted by the capacity cap before they expired.
+    pub fn evicted(&self) -> u64 {
+        self.evicted.load(Ordering::Relaxed)
     }
 
     /// Mint a nonce with an explicit `ttl`, overriding the store default.
@@ -89,31 +130,70 @@ impl InMemoryNonceStore {
     /// without sleeping.
     pub fn issue_with_ttl(&self, ttl: Duration) -> String {
         let nonce = generate_nonce();
-        let entry = Entry {
-            expires_at: Instant::now() + ttl,
-            used: false,
-        };
-        let mut entries = self.lock();
-        // Lazy reap: drop every already-expired entry BEFORE inserting the new
-        // one. Sweeping at issue time (not consume time) bounds memory to nonces
-        // issued within one live TTL window without a background task, and
-        // running it before the insert leaves the just-minted nonce untouched —
-        // so a zero-TTL nonce is still present to be consumed as `Expired`.
-        entries.retain(|_, e| Instant::now() < e.expires_at);
-        entries.insert(nonce.clone(), entry);
+        let now = Instant::now();
+        let expires_at = now + ttl;
+        let mut state = self.lock();
+        // Reap and evict BEFORE inserting, so a just-minted zero-TTL nonce is
+        // still present to be consumed as `Expired`.
+        while let Some((front_expires_at, _)) = state.queue.front() {
+            if now < *front_expires_at {
+                break;
+            }
+            state.pop_front();
+        }
+        let mut evicted = 0u64;
+        while state.entries.len() >= self.max_live && state.pop_front() {
+            evicted += 1;
+        }
+        state.queue.push_back((expires_at, nonce.clone()));
+        state.entries.insert(
+            nonce.clone(),
+            Entry {
+                expires_at,
+                used: false,
+            },
+        );
+        drop(state);
+        if evicted > 0 {
+            let previous = self.evicted.fetch_add(evicted, Ordering::Relaxed);
+            let total = previous + evicted;
+            // Log on the first eviction and whenever the total crosses a power
+            // of two, so a sustained flood stays visible without log spam.
+            if previous == 0 || total.ilog2() > previous.ilog2() {
+                tracing::warn!(
+                    evicted_total = total,
+                    max_live = self.max_live,
+                    "nonce store at capacity; evicting oldest nonces"
+                );
+            }
+        }
         nonce
     }
 
-    /// Lock the entry map, recovering the guard if a prior holder panicked.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Lock the state, recovering the guard if a prior holder panicked.
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Number of entries currently held. Test-only observability hook used to
-    /// assert the lazy reaper shrank the map.
+    /// assert reaping and eviction shrank the map.
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.lock().len()
+        self.lock().entries.len()
+    }
+}
+
+impl State {
+    /// Drop the oldest queued entry from the queue and map. Returns `false`
+    /// when the queue is empty.
+    fn pop_front(&mut self) -> bool {
+        match self.queue.pop_front() {
+            Some((_, nonce)) => {
+                self.entries.remove(&nonce);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -124,8 +204,8 @@ impl NonceStore for InMemoryNonceStore {
     }
 
     async fn consume(&self, nonce: &str) -> NonceOutcome {
-        let mut entries = self.lock();
-        match entries.get_mut(nonce) {
+        let mut state = self.lock();
+        match state.entries.get_mut(nonce) {
             None => NonceOutcome::Unknown,
             // Expiry is checked before use so a stale-but-unused nonce is still
             // rejected as expired.
@@ -184,10 +264,62 @@ mod tests {
         let store = InMemoryNonceStore::new(Duration::from_secs(30));
         // First nonce is born expired.
         let first = store.issue_with_ttl(Duration::ZERO);
-        // Issuing the second nonce triggers the lazy sweep, dropping `first`.
+        // Issuing the second nonce reaps `first` from the queue front.
         let second = store.issue_with_ttl(Duration::from_secs(30));
         assert_eq!(store.len(), 1);
         assert_eq!(store.consume(&first).await, NonceOutcome::Unknown);
         assert_eq!(store.consume(&second).await, NonceOutcome::Valid);
+    }
+
+    #[tokio::test]
+    async fn issuing_past_capacity_evicts_oldest() {
+        let store = InMemoryNonceStore::with_capacity(Duration::from_secs(30), 3);
+        let mut nonces = Vec::new();
+        for _ in 0..5 {
+            nonces.push(store.issue().await);
+            assert!(store.len() <= 3);
+        }
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.evicted(), 2);
+        assert_eq!(store.consume(&nonces[0]).await, NonceOutcome::Unknown);
+        assert_eq!(store.consume(&nonces[1]).await, NonceOutcome::Unknown);
+        for nonce in &nonces[2..] {
+            assert_eq!(store.consume(nonce).await, NonceOutcome::Valid);
+        }
+    }
+
+    #[tokio::test]
+    async fn used_entries_count_toward_capacity() {
+        let store = InMemoryNonceStore::with_capacity(Duration::from_secs(30), 2);
+        let first = store.issue().await;
+        assert_eq!(store.consume(&first).await, NonceOutcome::Valid);
+        assert_eq!(store.consume(&first).await, NonceOutcome::Reused);
+        store.issue().await;
+        store.issue().await;
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.evicted(), 1);
+        assert_eq!(store.consume(&first).await, NonceOutcome::Unknown);
+    }
+
+    #[tokio::test]
+    async fn reaping_pops_only_expired_front_entries() {
+        let store = InMemoryNonceStore::new(Duration::from_secs(30));
+        let a = store.issue_with_ttl(Duration::ZERO);
+        let b = store.issue_with_ttl(Duration::ZERO);
+        let live = store.issue_with_ttl(Duration::from_secs(30));
+        // Issuing `live` reaped `a` and `b` from the front of the queue.
+        assert_eq!(store.len(), 1);
+        let expired_behind_live = store.issue_with_ttl(Duration::ZERO);
+        // A live front entry stops the reap; the expired one behind it waits.
+        store.issue_with_ttl(Duration::from_secs(30));
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.evicted(), 0);
+        assert_eq!(store.consume(&a).await, NonceOutcome::Unknown);
+        assert_eq!(store.consume(&b).await, NonceOutcome::Unknown);
+        assert_eq!(
+            store.consume(&expired_behind_live).await,
+            NonceOutcome::Expired
+        );
+        assert_eq!(store.consume(&live).await, NonceOutcome::Valid);
     }
 }

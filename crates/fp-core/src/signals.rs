@@ -4,7 +4,7 @@
 //! any `userAgent` it likes. This module derives the signals a client **cannot**
 //! self-report — the real network IP and the TLS JA3/JA4 stack — and cross-checks
 //! the TLS stack against the JS/UA-claimed browser. The result feeds `/identify`
-//! **confidence only**, never the `visitorId` (JA4 is low-entropy and forgeable,
+//! **confidence only**, never the `visitor_id` (JA4 is low-entropy and forgeable,
 //! architecture §4.2).
 //!
 //! This is the framework-free compute: it takes plain values (the JA4 string, the
@@ -35,12 +35,12 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 /// Minimum cipher count in a JA4 fingerprint for the stack to read as a real
 /// browser. Browsers advertise a broad cipher list; minimal automation stacks
 /// (curl/python/go defaults) advertise few. Coarse structural heuristic, not a
-/// fingerprint database (see [`classify_ja4`]).
+/// fingerprint database (see [`ja4_client_stack`]).
 const BROWSER_MIN_CIPHERS: u32 = 10;
 /// Minimum TLS extension count in a JA4 fingerprint for a real-browser read.
 /// Browsers carry GREASE + ALPN + `key_share` + `supported_versions` + … ;
@@ -59,7 +59,7 @@ const BROWSER_MIN_EXTENSIONS: u32 = 10;
 /// pruning shapes from observed real-browser traffic rather than by hand — is a
 /// deferred follow-up, not done here. A shape absent from this list is not proof
 /// of automation, only an absence of positive browser evidence (see
-/// [`classify_ja4`], and [`StaticIpIntel`] for the same illustrative-placeholder
+/// [`ja4_client_stack`], and [`StaticIpIntel`] for the same illustrative-placeholder
 /// caveat).
 const BROWSER_JA4_SHAPES: &[(&str, &str, &str, &str)] = &[
     // Mainstream Chrome/Firefox/Edge/Safari over TCP: TLS 1.3, SNI present, HTTP/2
@@ -147,7 +147,7 @@ impl TlsConsistency {
 }
 
 /// The passive signals extracted for one request (architecture §5 `signals`), fed to the
-/// confidence fusion (§6) — never to the `visitorId`.
+/// confidence fusion (§6) — never to the `visitor_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassiveSignals {
     /// Coarse IP reputation band.
@@ -256,8 +256,8 @@ impl IpIntel for StaticIpIntel {
 ///   (the JS/UA-reported user agent). A missing (`None`) or unparseable JA4 yields
 ///   [`TlsConsistency::Degraded`] — the auto-degrade path (§4.2).
 ///
-/// `claimed_ua` is the client-reported UA (from `stable_components` / the HTTP
-/// `User-Agent`); it is the value under suspicion, cross-checked against the
+/// `claimed_ua` is the client-reported UA (the request's top-level
+/// `user_agent`); it is the value under suspicion, cross-checked against the
 /// unforgeable TLS stack.
 pub fn compute(
     ja4: Option<&str>,
@@ -270,7 +270,7 @@ pub fn compute(
         .map_or(IpRisk::Low, |ip| intel.assess(ip));
 
     let tls_consistency = match ja4 {
-        Some(ja4) => consistency(claimed_ua.map(classify_ua), classify_ja4(ja4)),
+        Some(ja4) => consistency(claimed_ua.map(classify_ua), ja4_client_stack(ja4)),
         None => TlsConsistency::Degraded, // Bot Management absent → auto-degrade.
     };
 
@@ -375,12 +375,12 @@ fn parse_ja4_shape(a: &str) -> Option<Ja4Shape<'_>> {
 /// This is a coarse structural heuristic, **not** a JA4→client fingerprint
 /// database; a malformed or too-short prefix reads as [`ClientStack::Unknown`]
 /// (→ degrade). (future TODO — real JA4 fingerprint database.)
-fn classify_ja4(ja4: &str) -> ClientStack {
+fn ja4_client_stack(ja4: &str) -> ClientStack {
     let a = ja4.split('_').next().unwrap_or(ja4);
     let Some(shape) = parse_ja4_shape(a) else {
         return ClientStack::Unknown;
     };
-    // Counts below the browser bar are a minimal automation stack (unchanged).
+    // Counts below the browser bar are a minimal automation stack.
     if shape.ciphers < BROWSER_MIN_CIPHERS || shape.extensions < BROWSER_MIN_EXTENSIONS {
         return ClientStack::Automation;
     }
@@ -401,29 +401,6 @@ fn classify_ja4(ja4: &str) -> ClientStack {
     }
 }
 
-/// Derive a coarse, low-cardinality JA4 **class** key for the cross-session
-/// new-device velocity signal (PLAN-006 HARDEN-002).
-///
-/// The key is the structural `JA4_a` shape — `(protocol, tls_version, sni,
-/// alpn)` — deliberately **without** the cipher/extension counts (an automation
-/// stack can pad those, and a real browser's vary build-to-build). This collapses
-/// every real client of one browser family (e.g. all Chrome-over-HTTP/2) into a
-/// single shared class, which is exactly the intent: a farm rotating a
-/// residential proxy pool but sharing one Chrome JA4 class shows a per-class
-/// new-device rate the per-IP key alone cannot see.
-///
-/// Reuses `parse_ja4_shape` (HARDEN-001). Returns `None` when the `JA4_a`
-/// prefix is missing / malformed / too short, so the caller records no
-/// JA4-class event (cold-start neutral).
-pub fn ja4_class(ja4: &str) -> Option<String> {
-    let a = ja4.split('_').next().unwrap_or(ja4);
-    let shape = parse_ja4_shape(a)?;
-    Some(format!(
-        "{}{}{}{}",
-        shape.protocol, shape.tls_version, shape.sni, shape.alpn
-    ))
-}
-
 /// Whether IPv4 `ip` falls in the CIDR block `net/prefix`.
 fn ipv4_in_block(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
     if prefix == 0 {
@@ -433,10 +410,38 @@ fn ipv4_in_block(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
     (u32::from(ip) & mask) == (u32::from(net) & mask)
 }
 
-/// The four known-answer client integrity probes the SDK reports under the
-/// request's top-level `integrity` field (`packages/client/src/integrity.ts`),
-/// each with a verdict of `ok` | `noise` | `unavailable`.
-pub const INTEGRITY_PROBES: [&str; 4] = ["canvas", "webgl", "audio", "rect"];
+/// The request's top-level `integrity` object: the verdicts of the four
+/// known-answer client integrity probes the SDK reports
+/// (`packages/client/src/integrity.ts`). An absent probe did not report.
+///
+/// Closed: a non-object value, an unknown key, or a verdict outside
+/// [`ProbeVerdict`] is a deserialization error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct Integrity {
+    /// Lossless canvas round-trip probe.
+    pub canvas: Option<ProbeVerdict>,
+    /// Exact WebGL clear-colour probe.
+    pub webgl: Option<ProbeVerdict>,
+    /// Exact constant audio-source probe.
+    pub audio: Option<ProbeVerdict>,
+    /// Exact 1/64-px layout probe.
+    pub rect: Option<ProbeVerdict>,
+}
+
+crate::object_only_serde!(Integrity);
+
+/// One integrity probe's verdict (`"ok"` | `"noise"` | `"unavailable"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeVerdict {
+    /// The probe returned the known answer.
+    Ok,
+    /// The probe returned a wrong answer.
+    Noise,
+    /// The probe could not run (API missing or failed).
+    Unavailable,
+}
 
 /// Confidence downgrade applied when the client's integrity probes report
 /// [`ClientIntegrity::Noise`] **and** the deployment has opted into the penalty.
@@ -448,7 +453,7 @@ pub const INTEGRITY_PROBES: [&str; 4] = ["canvas", "webgl", "audio", "rect"];
 /// false-positive rate exists; the verdict is always surfaced regardless.
 pub const INTEGRITY_NOISE_PENALTY: f64 = 0.3;
 
-/// Fused verdict of the client's known-answer integrity probes (red-team round 3).
+/// Fused verdict of the client's known-answer integrity probes.
 ///
 /// The SDK asks the browser four questions whose answers are fixed by
 /// construction in an unmodified Chromium (lossless canvas round-trip, exact
@@ -460,8 +465,8 @@ pub const INTEGRITY_NOISE_PENALTY: f64 = 0.3;
 ///
 /// Trust boundary: the verdicts are client-reported, so like every client value
 /// they are hookable; this is depth, not a lock. They ride top-level in the
-/// request — never inside `stable_components` — so they can never enter the
-/// `visitorId` match. Fusion into confidence is opt-in
+/// request — never inside `components` — so they can never enter the
+/// `visitor_id` match. Fusion into confidence is opt-in
 /// ([`confidence_adjustment`](ClientIntegrity::confidence_adjustment)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientIntegrity {
@@ -469,7 +474,7 @@ pub enum ClientIntegrity {
     Ok,
     /// At least one probe returned a wrong answer — fingerprint noise observed.
     Noise,
-    /// No probe reported a usable verdict (field absent, APIs missing, malformed).
+    /// No probe reported a usable verdict (field absent or every API missing).
     /// Neutral: an absent capability must never manufacture a penalty.
     Unavailable,
 }
@@ -484,16 +489,15 @@ impl ClientIntegrity {
         }
     }
 
-    /// Fold per-probe verdict strings into one verdict: any `noise` wins, else
-    /// any `ok` reads [`ClientIntegrity::Ok`], else nothing usable was reported.
-    /// Unknown strings count as unavailable, never as noise.
-    pub fn from_verdicts<'a>(verdicts: impl IntoIterator<Item = Option<&'a str>>) -> Self {
+    /// Fold per-probe verdicts into one verdict: any `noise` wins, else any
+    /// `ok` reads [`ClientIntegrity::Ok`], else nothing usable was reported.
+    pub fn from_verdicts(verdicts: impl IntoIterator<Item = Option<ProbeVerdict>>) -> Self {
         let mut saw_ok = false;
         for verdict in verdicts {
             match verdict {
-                Some("noise") => return ClientIntegrity::Noise,
-                Some("ok") => saw_ok = true,
-                _ => {}
+                Some(ProbeVerdict::Noise) => return ClientIntegrity::Noise,
+                Some(ProbeVerdict::Ok) => saw_ok = true,
+                Some(ProbeVerdict::Unavailable) | None => {}
             }
         }
         if saw_ok {
@@ -503,18 +507,13 @@ impl ClientIntegrity {
         }
     }
 
-    /// Read the verdict from the request's top-level `integrity` JSON value,
-    /// shaped `{ canvas, webgl, audio, rect }`. An absent field or a non-object
-    /// value is [`ClientIntegrity::Unavailable`].
-    pub fn from_json(integrity: Option<&Value>) -> Self {
-        let Some(object) = integrity.and_then(Value::as_object) else {
+    /// Fold the request's top-level [`Integrity`] object into one verdict; an
+    /// absent object is [`ClientIntegrity::Unavailable`].
+    pub fn from_integrity(integrity: Option<&Integrity>) -> Self {
+        let Some(probes) = integrity else {
             return ClientIntegrity::Unavailable;
         };
-        Self::from_verdicts(
-            INTEGRITY_PROBES
-                .iter()
-                .map(|probe| object.get(*probe).and_then(Value::as_str)),
-        )
+        Self::from_verdicts([probes.canvas, probes.webgl, probes.audio, probes.rect])
     }
 
     /// Confidence adjustment fused into `/identify` confidence alongside
@@ -546,12 +545,12 @@ pub const WINDOWS_CORE_FONTS: [&str; 5] = [
 pub const MACOS_CORE_FONTS: [&str; 3] = ["Helvetica Neue", "Menlo", "Gill Sans"];
 
 /// Verdict of cross-checking the UA-claimed OS family against the collected
-/// `fonts` set (red-team round 3).
+/// `fonts` set.
 ///
 /// A fingerprint-cloaking browser that borrows a Windows persona on a Linux host
 /// reports a Windows UA while its font set lacks every font Windows always has
 /// (the free `CloakBrowser` binary in Docker hides the host's Linux fonts but adds
-/// none). Surfaced-only: it never moves confidence or the `visitorId`.
+/// none). Surfaced-only: it never moves confidence or the `visitor_id`.
 ///
 /// Honest limits, stated plainly: the adversary's Pro preview binary already
 /// spoofs Windows font metrics, and its README tells operators to install the
@@ -567,7 +566,7 @@ pub enum PersonaCoherence {
     /// Calibri).
     Mismatch,
     /// No basis to check: no UA, an OS family outside the curated set, or no
-    /// `fonts` array. Neutral.
+    /// `fonts` component. Neutral.
     Unknown,
 }
 
@@ -595,31 +594,102 @@ fn core_fonts_for_ua(claimed_ua: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Cross-check the UA-claimed OS family against the collected `fonts` set (a
-/// JSON array of font names as the SDK sends it). See [`PersonaCoherence`].
-pub fn persona_coherence(claimed_ua: Option<&str>, fonts: Option<&Value>) -> PersonaCoherence {
+/// Cross-check the UA-claimed OS family against the collected `fonts` set (the
+/// `fonts` component). See [`PersonaCoherence`].
+pub fn persona_coherence(claimed_ua: Option<&str>, fonts: Option<&[String]>) -> PersonaCoherence {
     let Some(core) = claimed_ua.and_then(core_fonts_for_ua) else {
         return PersonaCoherence::Unknown;
     };
-    let Some(fonts) = fonts.and_then(Value::as_array) else {
+    let Some(fonts) = fonts else {
         return PersonaCoherence::Unknown;
     };
-    if fonts
-        .iter()
-        .filter_map(Value::as_str)
-        .any(|font| core.contains(&font))
-    {
+    if fonts.iter().any(|font| core.contains(&font.as_str())) {
         PersonaCoherence::Consistent
     } else {
         PersonaCoherence::Mismatch
     }
 }
 
+/// A client-side bot-detection verdict (`BotD`-shaped), sent alongside the
+/// components. `kind` names the detected automation framework when known.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct Botd {
+    /// Whether the client-side detector flagged the browser as automated.
+    pub bot: bool,
+    /// The detected automation kind (e.g. `headless_chrome`), if any.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+crate::object_only_serde!(serialize Botd);
+
+/// Automation verdict surfaced from a client-side [`Botd`] result.
+/// Surfaced-only: it never affects confidence, the decision, or the `visitor_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Automation {
+    /// The detector flagged the browser as automated.
+    Detected,
+    /// The detector ran and found no automation.
+    NotDetected,
+    /// No detector result was supplied.
+    Unknown,
+}
+
+impl Automation {
+    /// Map an optional [`Botd`] result: `bot = true` ⇒ detected, `false` ⇒ not
+    /// detected, absent ⇒ unknown.
+    pub fn from_botd(botd: Option<&Botd>) -> Self {
+        match botd {
+            Some(Botd { bot: true, .. }) => Automation::Detected,
+            Some(Botd { bot: false, .. }) => Automation::NotDetected,
+            None => Automation::Unknown,
+        }
+    }
+
+    /// Stable wire label (`"detected"|"not_detected"|"unknown"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Automation::Detected => "detected",
+            Automation::NotDetected => "not_detected",
+            Automation::Unknown => "unknown",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ClientIntegrity, INTEGRITY_NOISE_PENALTY, PersonaCoherence, persona_coherence};
+    use super::{
+        Automation, Botd, ClientIntegrity, INTEGRITY_NOISE_PENALTY, Integrity, PersonaCoherence,
+        ProbeVerdict, persona_coherence,
+    };
 
-    // --- Persona coherence (UA OS family vs fonts, red-team round 3) ---
+    // --- Automation (client-side BotD verdict) ---
+
+    #[test]
+    fn automation_maps_the_botd_verdict() {
+        let bot: Botd = serde_json::from_str(r#"{"bot":true,"kind":"headless_chrome"}"#).unwrap();
+        let human: Botd = serde_json::from_str(r#"{"bot":false}"#).unwrap();
+        assert_eq!(human.kind, None);
+        assert_eq!(Automation::from_botd(Some(&bot)), Automation::Detected);
+        assert_eq!(Automation::from_botd(Some(&human)), Automation::NotDetected);
+        assert_eq!(Automation::from_botd(None), Automation::Unknown);
+        assert_eq!(Automation::Detected.as_str(), "detected");
+        assert_eq!(Automation::NotDetected.as_str(), "not_detected");
+        assert_eq!(Automation::Unknown.as_str(), "unknown");
+    }
+
+    #[test]
+    fn botd_rejects_unknown_fields() {
+        assert!(serde_json::from_str::<Botd>(r#"{"bot":true,"score":1}"#).is_err());
+        assert!(serde_json::from_str::<Botd>(r#"{"kind":"x"}"#).is_err());
+    }
+
+    // --- Persona coherence (UA OS family vs fonts) ---
+
+    fn fonts(names: &[&str]) -> Vec<String> {
+        names.iter().map(|&n| n.to_owned()).collect()
+    }
 
     const WINDOWS_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36";
     const MAC_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36";
@@ -628,56 +698,56 @@ mod tests {
 
     #[test]
     fn persona_windows_ua_without_any_windows_core_font_is_a_mismatch() {
-        let linux_fonts = json!([
+        let linux_fonts = fonts(&[
             "Arial",
             "Courier New",
             "Times New Roman",
-            "Noto Color Emoji"
+            "Noto Color Emoji",
         ]);
         assert_eq!(
-            persona_coherence(Some(WINDOWS_UA), Some(&linux_fonts)),
+            persona_coherence(Some(WINDOWS_UA), Some(linux_fonts.as_slice())),
             PersonaCoherence::Mismatch
         );
         // An empty set is a mismatch too: a real Windows browser always finds Calibri.
         assert_eq!(
-            persona_coherence(Some(WINDOWS_UA), Some(&json!([]))),
+            persona_coherence(Some(WINDOWS_UA), Some(&[][..])),
             PersonaCoherence::Mismatch
         );
-        let windows_fonts = json!(["Arial", "Calibri", "Segoe UI Light"]);
+        let windows_fonts = fonts(&["Arial", "Calibri", "Segoe UI Light"]);
         assert_eq!(
-            persona_coherence(Some(WINDOWS_UA), Some(&windows_fonts)),
+            persona_coherence(Some(WINDOWS_UA), Some(windows_fonts.as_slice())),
             PersonaCoherence::Consistent
         );
     }
 
     #[test]
     fn persona_macos_checks_its_own_core_fonts_and_ios_is_not_macos() {
-        let mac_fonts = json!(["Helvetica Neue", "Menlo"]);
+        let mac_fonts = fonts(&["Helvetica Neue", "Menlo"]);
         assert_eq!(
-            persona_coherence(Some(MAC_UA), Some(&mac_fonts)),
+            persona_coherence(Some(MAC_UA), Some(mac_fonts.as_slice())),
             PersonaCoherence::Consistent
         );
         assert_eq!(
-            persona_coherence(Some(MAC_UA), Some(&json!(["Calibri"]))),
+            persona_coherence(Some(MAC_UA), Some(fonts(&["Calibri"]).as_slice())),
             PersonaCoherence::Mismatch
         );
         // `like Mac OS X` (iOS) is outside the curated set → unknown, never mismatch.
         assert_eq!(
-            persona_coherence(Some(IOS_UA), Some(&json!([]))),
+            persona_coherence(Some(IOS_UA), Some(&[][..])),
             PersonaCoherence::Unknown
         );
     }
 
     #[test]
-    fn persona_unknown_without_ua_family_or_fonts_array() {
+    fn persona_unknown_without_ua_family_or_fonts() {
         assert_eq!(
-            persona_coherence(None, Some(&json!([]))),
+            persona_coherence(None, Some(&[][..])),
             PersonaCoherence::Unknown
         );
         assert_eq!(
             persona_coherence(
                 Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/149"),
-                Some(&json!([]))
+                Some(&[][..])
             ),
             PersonaCoherence::Unknown
         );
@@ -685,31 +755,36 @@ mod tests {
             persona_coherence(Some(WINDOWS_UA), None),
             PersonaCoherence::Unknown
         );
-        assert_eq!(
-            persona_coherence(Some(WINDOWS_UA), Some(&json!("Calibri"))),
-            PersonaCoherence::Unknown
-        );
     }
     use super::{
-        ClientStack, IpIntel, IpRisk, PassiveSignals, StaticIpIntel, TlsConsistency, classify_ja4,
-        compute, ja4_class,
+        ClientStack, IpIntel, IpRisk, PassiveSignals, StaticIpIntel, TlsConsistency, compute,
+        ja4_client_stack,
     };
     use serde_json::json;
 
-    // --- Client integrity probes (red-team round 3) ---
+    // --- Client integrity probes ---
 
     #[test]
     fn integrity_any_noise_wins_then_ok_then_unavailable() {
         assert_eq!(
-            ClientIntegrity::from_verdicts([Some("ok"), Some("ok"), Some("noise"), None]),
+            ClientIntegrity::from_verdicts([
+                Some(ProbeVerdict::Ok),
+                Some(ProbeVerdict::Ok),
+                Some(ProbeVerdict::Noise),
+                None
+            ]),
             ClientIntegrity::Noise
         );
         assert_eq!(
-            ClientIntegrity::from_verdicts([Some("ok"), Some("unavailable"), None, Some("weird")]),
+            ClientIntegrity::from_verdicts([
+                Some(ProbeVerdict::Ok),
+                Some(ProbeVerdict::Unavailable),
+                None
+            ]),
             ClientIntegrity::Ok
         );
         assert_eq!(
-            ClientIntegrity::from_verdicts([Some("unavailable"), None, Some("weird")]),
+            ClientIntegrity::from_verdicts([Some(ProbeVerdict::Unavailable), None]),
             ClientIntegrity::Unavailable
         );
         assert_eq!(
@@ -718,34 +793,73 @@ mod tests {
         );
     }
 
+    fn integrity(value: serde_json::Value) -> Result<Integrity, serde_json::Error> {
+        serde_json::from_value(value)
+    }
+
     #[test]
-    fn integrity_from_json_reads_the_four_probes_and_degrades_on_malformed() {
-        let noisy = json!({ "canvas": "noise", "webgl": "ok", "audio": "ok", "rect": "ok" });
+    fn integrity_from_typed_verdicts() {
+        let noisy =
+            integrity(json!({ "canvas": "noise", "webgl": "ok", "audio": "ok", "rect": "ok" }))
+                .unwrap();
         assert_eq!(
-            ClientIntegrity::from_json(Some(&noisy)),
+            ClientIntegrity::from_integrity(Some(&noisy)),
             ClientIntegrity::Noise
         );
-        let clean = json!({ "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" });
+        let clean =
+            integrity(json!({ "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" }))
+                .unwrap();
         assert_eq!(
-            ClientIntegrity::from_json(Some(&clean)),
+            ClientIntegrity::from_integrity(Some(&clean)),
             ClientIntegrity::Ok
         );
-        // Absent, non-object, empty, non-string and unknown-key shapes are neutral.
+        let partial = integrity(json!({ "canvas": "unavailable", "rect": "ok" })).unwrap();
         assert_eq!(
-            ClientIntegrity::from_json(None),
+            ClientIntegrity::from_integrity(Some(&partial)),
+            ClientIntegrity::Ok
+        );
+        // Absent or empty is neutral.
+        assert_eq!(
+            ClientIntegrity::from_integrity(None),
             ClientIntegrity::Unavailable
         );
+        let empty = integrity(json!({})).unwrap();
         assert_eq!(
-            ClientIntegrity::from_json(Some(&json!("noise"))),
+            ClientIntegrity::from_integrity(Some(&empty)),
             ClientIntegrity::Unavailable
         );
+    }
+
+    #[test]
+    fn integrity_rejects_unknown_keys_bad_values_and_non_objects() {
+        for value in [
+            json!({ "canvas": "ok", "fonts": "ok" }),
+            json!({ "canvas": 1 }),
+            json!({ "canvas": "weird" }),
+            json!([]),
+            json!(["ok", "ok", "ok", "ok"]),
+            json!("noise"),
+            json!(null),
+        ] {
+            assert!(integrity(value.clone()).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn botd_rejects_non_objects() {
+        for value in [json!([]), json!([true]), json!(true), json!(null)] {
+            assert!(
+                serde_json::from_value::<Botd>(value.clone()).is_err(),
+                "{value}"
+            );
+        }
+        let botd: Botd = serde_json::from_value(json!({ "bot": true })).unwrap();
         assert_eq!(
-            ClientIntegrity::from_json(Some(&json!({}))),
-            ClientIntegrity::Unavailable
-        );
-        assert_eq!(
-            ClientIntegrity::from_json(Some(&json!({ "canvas": 1, "other": "noise" }))),
-            ClientIntegrity::Unavailable
+            botd,
+            Botd {
+                bot: true,
+                kind: None
+            }
         );
     }
 
@@ -901,10 +1015,10 @@ mod tests {
 
     #[test]
     fn ja4_structural_classification() {
-        assert_eq!(classify_ja4(BROWSER_JA4), ClientStack::Browser);
-        assert_eq!(classify_ja4(AUTOMATION_JA4), ClientStack::Automation);
+        assert_eq!(ja4_client_stack(BROWSER_JA4), ClientStack::Browser);
+        assert_eq!(ja4_client_stack(AUTOMATION_JA4), ClientStack::Automation);
         // Too short to hold the count fields.
-        assert_eq!(classify_ja4("t13d"), ClientStack::Unknown);
+        assert_eq!(ja4_client_stack("t13d"), ClientStack::Unknown);
     }
 
     #[test]
@@ -912,7 +1026,7 @@ mod tests {
         // A real Chrome/Edge user over QUIC / HTTP-3: the widened shape whitelist
         // must accept `(q, 13, d, h3)` so a legitimate HTTP/3 handshake stops
         // false-reading as automation (the false positive this calibration fixes).
-        assert_eq!(classify_ja4(QUIC_BROWSER_JA4), ClientStack::Browser);
+        assert_eq!(ja4_client_stack(QUIC_BROWSER_JA4), ClientStack::Browser);
     }
 
     #[test]
@@ -922,22 +1036,10 @@ mod tests {
         // ALPN, kept off the browser shape whitelist. Count-only thresholding
         // misread this as `Browser`; the full-shape check classifies it as
         // automation. The count-padding defense stays intact.
-        assert_eq!(classify_ja4(PADDED_AUTOMATION_JA4), ClientStack::Automation);
-    }
-
-    #[test]
-    fn ja4_class_is_the_coarse_shape_without_counts() {
-        // The class is the `(protocol, tls_version, sni, alpn)` shape only, so two
-        // JA4s of the same browser family that differ *only* in cipher/extension
-        // counts (and in the hash tail) collapse to ONE shared class — the coarse
-        // bucket the per-class velocity key counts within.
-        assert_eq!(ja4_class(BROWSER_JA4).as_deref(), Some("t13dh2"));
-        assert_eq!(ja4_class(CLOAK_JA4).as_deref(), Some("t13dh2"));
-        assert_eq!(ja4_class(BROWSER_JA4), ja4_class(CLOAK_JA4));
-        // Different transport/ALPN → a different class.
-        assert_eq!(ja4_class(QUIC_BROWSER_JA4).as_deref(), Some("q13dh3"));
-        // A malformed / too-short prefix yields no class (→ no event recorded).
-        assert_eq!(ja4_class("t13d"), None);
+        assert_eq!(
+            ja4_client_stack(PADDED_AUTOMATION_JA4),
+            ClientStack::Automation
+        );
     }
 
     #[test]
@@ -967,7 +1069,7 @@ mod tests {
     /// request distinguishes it from an honest user. This is intentional and
     /// documented so any future change that closes or reopens the gap shows up as a
     /// visible test diff rather than folklore. The signal that actually catches this
-    /// adversary is the cross-session velocity check (RT-003), not this module.
+    /// adversary is the cross-session velocity check, not this module.
     #[test]
     fn cloak_browser_passes_every_single_request_signal() {
         let intel = StaticIpIntel::new();

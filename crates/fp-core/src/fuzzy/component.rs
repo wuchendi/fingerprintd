@@ -5,10 +5,11 @@
 //! set values are salted-hashed before storage while still supporting equality
 //! comparison, frequency counting, and set similarity.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "rng")]
 use rand::{Rng, rng};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use sha2::{Digest, Sha256};
 
 /// A 256-bit salted digest — the on-store form of a scalar value or a set element.
@@ -80,15 +81,157 @@ impl std::fmt::Debug for Salt {
 }
 
 /// The stored form of one fingerprint component (fuzzy-matching §3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Wire form (serde JSON, stable — a stateless host persists it verbatim): one
+/// single-key object per component,
+/// - `{"category": "<64 lowercase hex>"}` — the salted value hash;
+/// - `{"numeric": <i64>}`;
+/// - `{"set": ["<64 lowercase hex>", ..]}` — salted element hashes, sorted.
+///
+/// Deserialization accepts only these shapes: an unknown tag, a hash that is not
+/// 64 hex digits, or a non-integer number is an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Stored {
     /// A category value, kept as its salted hash for equality + frequency use.
+    #[serde(with = "hex_hash")]
     Category(Hash32),
     /// A set component (e.g. fonts), kept as per-element salted hashes so that
     /// set similarity survives storage.
+    #[serde(with = "hex_hash_set")]
     Set(BTreeSet<Hash32>),
     /// A numeric component, kept as an (optionally bucketed) integer.
     Numeric(i64),
+}
+
+impl Stored {
+    /// The storage [`Kind`] this value has.
+    pub fn kind(&self) -> Kind {
+        match self {
+            Stored::Category(_) => Kind::Category,
+            Stored::Set(_) => Kind::Set,
+            Stored::Numeric(_) => Kind::Numeric,
+        }
+    }
+}
+
+/// Serde for a [`Hash32`] as 64 lowercase hex digits.
+mod hex_hash {
+    use super::{Deserialize, Deserializer, Hash32, Serializer};
+    use serde::de::Error as _;
+
+    pub(super) fn serialize<S: Serializer>(
+        hash: &Hash32,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&hex::encode(hash))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Hash32, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        decode(&raw).map_err(D::Error::custom)
+    }
+
+    /// Decode one 64-hex-digit hash.
+    pub(super) fn decode(raw: &str) -> Result<Hash32, String> {
+        let mut hash = [0u8; 32];
+        hex::decode_to_slice(raw, &mut hash)
+            .map_err(|e| format!("invalid stored hash {raw:?}: {e}"))?;
+        Ok(hash)
+    }
+}
+
+/// Serde for a set of [`Hash32`] as a sorted array of 64-hex-digit strings.
+mod hex_hash_set {
+    use super::{BTreeSet, Deserialize, Deserializer, Hash32, Serializer};
+    use serde::de::Error as _;
+    use serde::ser::SerializeSeq as _;
+
+    pub(super) fn serialize<S: Serializer>(
+        set: &BTreeSet<Hash32>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(set.len()))?;
+        for hash in set {
+            seq.serialize_element(&hex::encode(hash))?;
+        }
+        seq.end()
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeSet<Hash32>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .iter()
+            .map(|raw| super::hex_hash::decode(raw).map_err(D::Error::custom))
+            .collect()
+    }
+}
+
+/// The salted stored form of one fingerprint: component wire name → [`Stored`].
+///
+/// This is all a stateless host persists for a device — never a raw value.
+/// Wire form: a JSON object keyed by [`COMPONENT_KEYS`] names, each value a
+/// [`Stored`] of that component's [`Kind`], e.g.
+/// `{"cpu_cores": {"numeric": 8}, "fonts": {"set": ["<hex>", ..]}, "webgl":
+/// {"category": "<hex>"}}`. Absent components are omitted. Deserialization
+/// rejects a name outside the schema and a value of the wrong kind.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct StoredComponents(BTreeMap<String, Stored>);
+
+impl StoredComponents {
+    /// The stored values keyed by component name.
+    pub fn as_map(&self) -> &BTreeMap<String, Stored> {
+        &self.0
+    }
+
+    /// Unwrap into the stored values keyed by component name.
+    pub fn into_map(self) -> BTreeMap<String, Stored> {
+        self.0
+    }
+
+    /// `self` drifted toward `observation` exactly as the record library folds
+    /// an observation into a template (fuzzy-matching §7): every component
+    /// present in `observation` overwrites the template's value, every other
+    /// template component is kept.
+    #[must_use]
+    pub fn merged(&self, observation: &StoredComponents) -> StoredComponents {
+        let mut merged = self.0.clone();
+        merged.extend(
+            observation
+                .0
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        StoredComponents(merged)
+    }
+}
+
+impl From<BTreeMap<String, Stored>> for StoredComponents {
+    fn from(map: BTreeMap<String, Stored>) -> Self {
+        Self(map)
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredComponents {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let map = BTreeMap::<String, Stored>::deserialize(deserializer)?;
+        for (name, value) in &map {
+            let component = Component::from_name(name)
+                .ok_or_else(|| D::Error::custom(format!("unknown component {name:?}")))?;
+            if component.kind() != value.kind() {
+                return Err(D::Error::custom(format!(
+                    "component {name:?} must be stored as {:?}, got {:?}",
+                    component.kind(),
+                    value.kind()
+                )));
+            }
+        }
+        Ok(Self(map))
+    }
 }
 
 /// Order-independent digest of a stored hash set — the frequency key that lets
@@ -122,9 +265,9 @@ pub fn jaccard(a: &BTreeSet<Hash32>, b: &BTreeSet<Hash32>) -> f64 {
 pub enum Stability {
     /// Rarely changes for the same device (`WebGL`, audio, timezone, `CPU`).
     High,
-    /// Changes occasionally (canvas, fonts, screen).
+    /// Changes occasionally (fonts, screen, `WebGL` extensions).
     Medium,
-    /// Changes frequently — the avalanche source (`UA` / browser version).
+    /// Changes frequently or is noised per session (canvas).
     Low,
 }
 
@@ -151,71 +294,217 @@ pub enum Kind {
     Numeric,
 }
 
-/// Schema entry for one component name: its stored [`Kind`] (§3) and its
-/// [`Stability`] tier — the source of the `m_i` prior the scorer uses (§2/§9).
-#[derive(Debug, Clone, Copy)]
-pub struct FieldSpec {
-    /// Stability tier, source of the `m_i` prior (§2/§9).
-    pub stability: Stability,
-    /// How the value is stored (§3).
-    pub kind: Kind,
+/// One fingerprint component of the closed matching schema (fuzzy-matching §2
+/// component table).
+///
+/// This table is the single source of truth for every component the matcher
+/// knows: its wire name, stored [`Kind`], [`Stability`] tier (the `m_i` prior),
+/// and cold-start `u_i` prior. There is no catch-all — a name outside this
+/// table is not a component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Component {
+    /// `WebGL` vendor/renderer string.
+    Webgl,
+    /// Digest of the supported `WebGL` extensions.
+    WebglExtensions,
+    /// `navigator.platform`.
+    Platform,
+    /// IANA timezone name.
+    Timezone,
+    /// Preferred languages, comma-joined.
+    Languages,
+    /// Audio-stack render fingerprint.
+    Audio,
+    /// Canvas render digest. Noised per session by privacy / anti-detect
+    /// browsers, so a mismatch weighs less than a medium component.
+    Canvas,
+    /// Logical CPU core count.
+    CpuCores,
+    /// Device memory in GiB.
+    DeviceMemory,
+    /// Screen resolution `"WxH"`, longer side first.
+    Screen,
+    /// Detected font names.
+    Fonts,
+    /// Plugin names.
+    Plugins,
+    /// Default font-size preferences digest.
+    FontPreferences,
+    /// Screen frame (taskbar/dock insets) digest.
+    ScreenFrame,
+    /// `Math` function output digest.
+    Math,
+    /// Touch-support digest.
+    TouchSupport,
+    /// Content-blocker detection digest.
+    DomBlockers,
+    /// User-Agent Client Hints digest.
+    UserAgentData,
 }
 
-/// Classify a component name into its schema entry (fuzzy-matching §2 component table).
+/// The wire names of every [`Component`], in [`Component::ALL`] order.
 ///
-/// Unknown names default to a medium-stability category value.
-pub fn classify(name: &str) -> FieldSpec {
-    let (stability, kind) = match name {
-        "webgl" | "platform" | "timezone" | "audio" | "languages" => {
-            (Stability::High, Kind::Category)
+/// This is THE list of keys the SDK adapter must emit; the matcher rejects any
+/// other key.
+pub const COMPONENT_KEYS: [&str; 18] = [
+    "webgl",
+    "webgl_extensions",
+    "platform",
+    "timezone",
+    "languages",
+    "audio",
+    "canvas",
+    "cpu_cores",
+    "device_memory",
+    "screen",
+    "fonts",
+    "plugins",
+    "font_preferences",
+    "screen_frame",
+    "math",
+    "touch_support",
+    "dom_blockers",
+    "user_agent_data",
+];
+
+impl Component {
+    /// Every component, in schema order.
+    pub const ALL: [Component; 18] = [
+        Component::Webgl,
+        Component::WebglExtensions,
+        Component::Platform,
+        Component::Timezone,
+        Component::Languages,
+        Component::Audio,
+        Component::Canvas,
+        Component::CpuCores,
+        Component::DeviceMemory,
+        Component::Screen,
+        Component::Fonts,
+        Component::Plugins,
+        Component::FontPreferences,
+        Component::ScreenFrame,
+        Component::Math,
+        Component::TouchSupport,
+        Component::DomBlockers,
+        Component::UserAgentData,
+    ];
+
+    /// The component's wire name (a [`COMPONENT_KEYS`] entry).
+    pub fn name(self) -> &'static str {
+        match self {
+            Component::Webgl => "webgl",
+            Component::WebglExtensions => "webgl_extensions",
+            Component::Platform => "platform",
+            Component::Timezone => "timezone",
+            Component::Languages => "languages",
+            Component::Audio => "audio",
+            Component::Canvas => "canvas",
+            Component::CpuCores => "cpu_cores",
+            Component::DeviceMemory => "device_memory",
+            Component::Screen => "screen",
+            Component::Fonts => "fonts",
+            Component::Plugins => "plugins",
+            Component::FontPreferences => "font_preferences",
+            Component::ScreenFrame => "screen_frame",
+            Component::Math => "math",
+            Component::TouchSupport => "touch_support",
+            Component::DomBlockers => "dom_blockers",
+            Component::UserAgentData => "user_agent_data",
         }
-        "cpu_cores" | "device_memory" => (Stability::High, Kind::Numeric),
-        "fonts" | "plugins" => (Stability::Medium, Kind::Set),
-        // Canvas is noised per session by privacy / anti-detect browsers, so a
-        // mismatch must weigh less than a medium component.
-        "user_agent" | "canvas" => (Stability::Low, Kind::Category),
-        // `screen` (the SDK's `"WxH"` string, longer side first),
-        // `webgl_extensions`, and unknown names are medium-stability categories.
-        _ => (Stability::Medium, Kind::Category),
-    };
-    FieldSpec { stability, kind }
-}
+    }
 
-/// Cold-start prior for `u_i = P(agree | different device)` — how often two
-/// unrelated devices share this component's value (fuzzy-matching §5/§9).
-///
-/// The frequency table refines it per component as observations accumulate
-/// (`FuzzyStore::u_estimate`). TUNING PLACEHOLDERS (judgement, not measured):
-/// device-distinctive renders and hardware strings are rare, locale-level
-/// values are common, and names the schema does not know — mostly
-/// `FingerprintJS` booleans and small enums — are treated as near-universal so
-/// that agreeing on them is no evidence until data says otherwise.
-pub fn u_prior(name: &str) -> f64 {
-    match name {
-        "canvas" => 0.02,
-        "webgl" | "webgl_extensions" | "audio" | "userAgentData" | "fonts" => 0.05,
-        "fontPreferences" | "screen" | "user_agent" => 0.1,
-        "timezone" | "screenFrame" => 0.2,
-        "languages" | "platform" | "cpu_cores" | "plugins" => 0.3,
-        "device_memory" => 0.4,
-        "math" | "touchSupport" | "domBlockers" => 0.5,
-        _ => 0.8,
+    /// The component whose wire name is `name`, if it is in the schema.
+    pub fn from_name(name: &str) -> Option<Component> {
+        Component::ALL.into_iter().find(|c| c.name() == name)
+    }
+
+    /// How the component's value is stored (§3).
+    pub fn kind(self) -> Kind {
+        match self {
+            Component::CpuCores | Component::DeviceMemory => Kind::Numeric,
+            Component::Fonts | Component::Plugins => Kind::Set,
+            Component::Webgl
+            | Component::WebglExtensions
+            | Component::Platform
+            | Component::Timezone
+            | Component::Languages
+            | Component::Audio
+            | Component::Canvas
+            | Component::Screen
+            | Component::FontPreferences
+            | Component::ScreenFrame
+            | Component::Math
+            | Component::TouchSupport
+            | Component::DomBlockers
+            | Component::UserAgentData => Kind::Category,
+        }
+    }
+
+    /// Stability tier, the source of the `m_i` prior (§2/§9).
+    pub fn stability(self) -> Stability {
+        match self {
+            Component::Webgl
+            | Component::Platform
+            | Component::Timezone
+            | Component::Languages
+            | Component::Audio
+            | Component::CpuCores
+            | Component::DeviceMemory => Stability::High,
+            Component::Canvas => Stability::Low,
+            Component::WebglExtensions
+            | Component::Screen
+            | Component::Fonts
+            | Component::Plugins
+            | Component::FontPreferences
+            | Component::ScreenFrame
+            | Component::Math
+            | Component::TouchSupport
+            | Component::DomBlockers
+            | Component::UserAgentData => Stability::Medium,
+        }
+    }
+
+    /// Cold-start prior for `u_i = P(agree | different device)` — how often two
+    /// unrelated devices share this component's value (fuzzy-matching §5/§9).
+    ///
+    /// The frequency table refines it per component as observations accumulate
+    /// (`FuzzyStore::u_estimate`). TUNING PLACEHOLDERS (judgement, not measured):
+    /// device-distinctive renders and hardware strings are rare, locale-level
+    /// values are common, and small enums are near-even.
+    pub fn u_prior(self) -> f64 {
+        match self {
+            Component::Canvas => 0.02,
+            Component::Webgl
+            | Component::WebglExtensions
+            | Component::Audio
+            | Component::Fonts
+            | Component::UserAgentData => 0.05,
+            Component::Screen | Component::FontPreferences => 0.1,
+            Component::Timezone | Component::ScreenFrame => 0.2,
+            Component::Platform
+            | Component::Languages
+            | Component::CpuCores
+            | Component::Plugins => 0.3,
+            Component::DeviceMemory => 0.4,
+            Component::Math | Component::TouchSupport | Component::DomBlockers => 0.5,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Salt, Stability, classify, jaccard};
+    use super::{COMPONENT_KEYS, Component, Kind, Salt, Stability, jaccard};
 
     #[test]
     fn screen_is_a_category_and_canvas_is_low_stability() {
         // FJS screenResolution arrives as "WxH": a Numeric kind could not store it.
-        assert_eq!(classify("screen").kind, Kind::Category);
-        assert_eq!(classify("screen").stability, Stability::Medium);
+        assert_eq!(Component::Screen.kind(), Kind::Category);
+        assert_eq!(Component::Screen.stability(), Stability::Medium);
         // Canvas is noised by privacy/anti-detect browsers: low tier.
-        assert_eq!(classify("canvas").kind, Kind::Category);
-        assert_eq!(classify("canvas").stability, Stability::Low);
-        assert_eq!(classify("webgl_extensions").stability, Stability::Medium);
+        assert_eq!(Component::Canvas.kind(), Kind::Category);
+        assert_eq!(Component::Canvas.stability(), Stability::Low);
+        assert_eq!(Component::WebglExtensions.stability(), Stability::Medium);
     }
 
     #[test]
@@ -255,16 +544,22 @@ mod tests {
 
     #[test]
     fn schema_maps_known_components() {
-        use super::{Kind, classify};
-        use crate::fuzzy::component::Stability;
+        assert_eq!(Component::Webgl.stability(), Stability::High);
+        assert_eq!(Component::Fonts.kind(), Kind::Set);
+        assert_eq!(Component::Plugins.kind(), Kind::Set);
+        assert_eq!(Component::CpuCores.kind(), Kind::Numeric);
+        assert_eq!(Component::DeviceMemory.kind(), Kind::Numeric);
+        assert!((Component::UserAgentData.u_prior() - 0.05).abs() < f64::EPSILON);
+        assert!((Component::DomBlockers.u_prior() - 0.5).abs() < f64::EPSILON);
+    }
 
-        assert_eq!(classify("user_agent").stability, Stability::Low);
-        assert_eq!(classify("webgl").stability, Stability::High);
-        assert_eq!(classify("fonts").kind, Kind::Set);
-        assert_eq!(classify("cpu_cores").kind, Kind::Numeric);
-        // Unknown -> medium-stability category default.
-        let unknown = classify("something_new");
-        assert_eq!(unknown.stability, Stability::Medium);
-        assert_eq!(unknown.kind, Kind::Category);
+    #[test]
+    fn component_keys_match_all_in_order() {
+        let names: Vec<&str> = Component::ALL.iter().map(|c| c.name()).collect();
+        assert_eq!(names, COMPONENT_KEYS);
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), COMPONENT_KEYS.len());
     }
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Synthetic labelled fixture for the offline evaluation harness (design §10). Observations are grouped by ground-truth deviceId: every observation under one deviceId is the SAME physical device across visits (small real-world drift — a browser auto-upgrade, one font added or removed). Distinct deviceIds are genuinely different devices that must not be merged. These values are hand-authored to exercise the matching engine directionally; they are NOT real labelled traffic, so the stability/collision rates they produce do not certify the PRD §3 targets (≥95% stability, ≤1% collision). See the TODO in eval.rs.",
+  "description": "Synthetic labelled fixture for the offline evaluation harness (design §10). Observations are grouped by ground-truth deviceId: every observation under one deviceId is the SAME physical device across visits (small real-world drift — one font added or removed). Distinct deviceIds are genuinely different devices that must not be merged. These values are hand-authored to exercise the matching engine directionally; they are NOT real labelled traffic, so the stability/collision rates they produce do not certify the product targets (≥95% stability, ≤1% collision). See the TODO in eval.rs.",
   "devices": [
     {
       "deviceId": "device-alpha-intel-linux",
@@ -11,8 +11,7 @@
           "audio": "124.04",
           "cpu_cores": 8,
           "device_memory": 8,
-          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"],
-          "user_agent": "Chrome/120"
+          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"]
         },
         {
           "webgl": "ANGLE (Intel)",
@@ -21,8 +20,7 @@
           "audio": "124.04",
           "cpu_cores": 8,
           "device_memory": 8,
-          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Segoe UI"],
-          "user_agent": "Chrome/121"
+          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Segoe UI"]
         },
         {
           "webgl": "ANGLE (Intel)",
@@ -31,8 +29,7 @@
           "audio": "124.04",
           "cpu_cores": 8,
           "device_memory": 8,
-          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Segoe UI", "Cantarell"],
-          "user_agent": "Chrome/122"
+          "fonts": ["Arial", "Helvetica", "Courier", "Times", "Segoe UI", "Cantarell"]
         }
       ]
     },
@@ -46,8 +43,7 @@
           "audio": "35.7",
           "cpu_cores": 6,
           "device_memory": 4,
-          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino"],
-          "user_agent": "Safari/17"
+          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino"]
         },
         {
           "webgl": "Apple GPU",
@@ -56,8 +52,7 @@
           "audio": "35.7",
           "cpu_cores": 6,
           "device_memory": 4,
-          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino", "Optima"],
-          "user_agent": "Safari/17.1"
+          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino", "Optima"]
         },
         {
           "webgl": "Apple GPU",
@@ -66,8 +61,7 @@
           "audio": "35.7",
           "cpu_cores": 6,
           "device_memory": 4,
-          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino", "Optima"],
-          "user_agent": "Safari/17.2"
+          "fonts": ["SF Pro", "Menlo", "Georgia", "Palatino", "Optima"]
         }
       ]
     },
@@ -81,8 +75,7 @@
           "audio": "88.21",
           "cpu_cores": 8,
           "device_memory": 6,
-          "fonts": ["Roboto", "Noto", "Droid", "Ubuntu"],
-          "user_agent": "Firefox/119"
+          "fonts": ["Roboto", "Noto", "Droid", "Ubuntu"]
         },
         {
           "webgl": "Mali-G78",
@@ -91,8 +84,7 @@
           "audio": "88.21",
           "cpu_cores": 8,
           "device_memory": 6,
-          "fonts": ["Roboto", "Noto", "Droid", "Ubuntu", "Cantarell"],
-          "user_agent": "Firefox/120"
+          "fonts": ["Roboto", "Noto", "Droid", "Ubuntu", "Cantarell"]
         }
       ]
     },
@@ -106,8 +98,7 @@
           "audio": "210.53",
           "cpu_cores": 16,
           "device_memory": 32,
-          "fonts": ["Segoe UI", "Tahoma", "Calibri", "Consolas", "Georgia"],
-          "user_agent": "Edge/120"
+          "fonts": ["Segoe UI", "Tahoma", "Calibri", "Consolas", "Georgia"]
         },
         {
           "webgl": "ANGLE (NVIDIA)",
@@ -116,8 +107,7 @@
           "audio": "210.53",
           "cpu_cores": 16,
           "device_memory": 32,
-          "fonts": ["Segoe UI", "Tahoma", "Calibri", "Consolas", "Verdana"],
-          "user_agent": "Edge/121"
+          "fonts": ["Segoe UI", "Tahoma", "Calibri", "Consolas", "Verdana"]
         }
       ]
     }

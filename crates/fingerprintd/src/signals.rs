@@ -6,16 +6,9 @@
 //! shares it. This module is the thin HTTP adapter: it owns the trusted-header
 //! names, pulls the two header strings off an [`axum::http::HeaderMap`], and
 //! delegates to [`fingerprintd::signals::compute`].
-//!
-//! The moved types are re-exported so downstream `use crate::signals::{…}` keeps
-//! compiling unchanged.
 
 use axum::http::HeaderMap;
-use fingerprintd::signals::compute;
-pub use fingerprintd::signals::{
-    ClientIntegrity, IpIntel, IpRisk, PassiveSignals, PersonaCoherence, StaticIpIntel,
-    TlsConsistency, persona_coherence,
-};
+use fingerprintd::signals::{IpIntel, PassiveSignals, compute};
 
 /// Trusted request header carrying the real client IP, injected by the Cloudflare
 /// edge. Standard Cloudflare header (architecture §4.2).
@@ -31,11 +24,11 @@ pub const JA4_HEADER: &str = "cf-bot-management-ja4";
 ///
 /// Pulls the `CF-Connecting-IP` and JA4 header strings and delegates the compute
 /// to [`fingerprintd::signals::compute`]: a missing/unparseable IP defaults to
-/// [`IpRisk::Low`], and a missing or unparseable JA4 yields
-/// [`TlsConsistency::Degraded`] (the auto-degrade path, §4.2).
+/// [`fingerprintd::signals::IpRisk::Low`], and a missing or unparseable JA4 yields
+/// [`fingerprintd::signals::TlsConsistency::Degraded`] (the auto-degrade path, §4.2).
 ///
-/// `claimed_ua` is the client-reported UA (from `stable_components` / the HTTP
-/// `User-Agent`); it is the value under suspicion, cross-checked against the
+/// `claimed_ua` is the client-reported UA (the request body's top-level
+/// `user_agent`); it is the value under suspicion, cross-checked against the
 /// unforgeable TLS stack.
 pub fn extract(
     headers: &HeaderMap,
@@ -57,8 +50,9 @@ fn header_str<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CF_CONNECTING_IP, IpRisk, JA4_HEADER, StaticIpIntel, TlsConsistency, extract};
+    use super::{CF_CONNECTING_IP, JA4_HEADER, extract};
     use axum::http::{HeaderMap, HeaderName, HeaderValue};
+    use fingerprintd::signals::{IpRisk, StaticIpIntel, TlsConsistency};
 
     /// A JA4 whose structural counts read as a real browser (15 ciphers, 16 ext).
     const BROWSER_JA4: &str = "t13d1516h2_8daaf6152771_02713d6af862";

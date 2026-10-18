@@ -3,12 +3,12 @@
 //! Given a probe, [`FuzzyStore::identify`] performs the full two-stage match:
 //! stage one recalls candidates from the blocking indexes (fuzzy-matching §4, in
 //! [`super`]), stage two scores each candidate with the Fellegi–Sunter model
-//! (§5) and applies the double-threshold decision (§5.4), drift update (§7), and
-//! confidence fusion (§6).
+//! (§5) and applies the double-threshold decision (§5.4), the template-jump
+//! guard, drift update (§7), and confidence fusion (§6).
 //!
 //! The Fellegi–Sunter weights use two per-component parameters:
 //! - `m_i = P(agree | same device)` — the cold-start stability prior (§2/§9),
-//!   read from [`super::classify`].
+//!   read from [`Component::stability`].
 //! - `u_i = P(agree | different device)` — the value's rarity, estimated from
 //!   the frequency table (§9). Rare values that agree are strong evidence;
 //!   common ones (Chrome-on-Windows) carry almost none.
@@ -17,14 +17,14 @@
 //! evaluation (§10) tunes them against a labelled set. They are deliberately
 //! separated so the eval harness can grid-search without touching scoring.
 
-use serde_json::Value;
-use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 use super::{
-    FuzzyStore, classify,
-    component::{Hash32, Stored, jaccard, set_digest, u_prior},
+    FuzzyStore, State,
+    component::{Component, Hash32, Stability, Stored, jaccard, set_digest},
+    components::Components,
     record::FingerprintRecord,
-    velocity::{self, VelocityBand},
+    velocity::VelocityBand,
 };
 
 /// Score at or above which the best candidate is accepted as the same device
@@ -39,7 +39,7 @@ const TAU: f64 = 0.5;
 /// Two candidates both `≥ T_hi` within this many bits are flagged as a
 /// collision risk (fuzzy-matching §5.4).
 const COLLISION_GAP: f64 = 2.0;
-/// Pseudo-count weighting each component's `u_i` prior ([`u_prior`]) against
+/// Pseudo-count weighting each component's `u_i` prior ([`Component::u_prior`]) against
 /// its observed value frequency (fuzzy-matching §9). Holds the estimate near the
 /// prior on a cold or tiny library (a single recalled candidate), letting the
 /// observed frequency take over as sightings accumulate.
@@ -59,28 +59,26 @@ const M_FLOOR: f64 = 1e-4;
 const M_CEIL: f64 = 0.9999;
 /// Score scale (bits) over which confidence margins saturate (fuzzy-matching §6).
 const CONF_SCALE: f64 = 4.0;
-/// Confidence downgrade applied when a client IP's cross-session new-device rate
-/// reaches [`VelocityBand::High`] — the fresh-seed-per-launch farm's footprint.
-///
-/// TUNING PLACEHOLDER (a policy guess, not a measured claim): fused the same way
-/// as the passive-signal adjustment (`signals.rs` `confidence_adjustment`), it
-/// lowers decision confidence for a `NewDevice` verdict without touching the
-/// `visitorId` or the decision itself.
-const VELOCITY_PENALTY: f64 = 0.3;
 /// Component count of a full rich fingerprint. Confidence scales the number of
 /// components that actually took part in scoring against this, so a sparse probe
 /// (many missing) is less certain (fuzzy-matching §6/§8).
 const FULL_COMPONENTS: f64 = 8.0;
+/// Most High-stability components a probe may change against a matched
+/// template and still be accepted as a [`Decision::Match`]. A probe changing
+/// more is the shape of a template being walked onto another device, so the
+/// match is downgraded to [`Decision::Review`] (see [`is_template_jump`]).
+pub const TEMPLATE_JUMP_MAX_HIGH_CHANGES: usize = 2;
 
 /// The double-threshold verdict for a probe (fuzzy-matching §5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// Best candidate scored `≥ T_hi` — accepted as the same device.
     Match,
-    /// Best candidate scored in `[T_lo, T_hi)` — suspected; returned but the
-    /// template is **not** updated (anti-poisoning, fuzzy-matching §7).
+    /// Best candidate scored in `[T_lo, T_hi)`, or scored a match but jumped
+    /// its template — suspected; returned but the template is **not** updated
+    /// (anti-poisoning, fuzzy-matching §7).
     Review,
-    /// No candidate cleared `T_lo` — a fresh `visitorId` is minted.
+    /// No candidate cleared `T_lo` — a fresh `visitor_id` is minted.
     NewDevice,
 }
 
@@ -95,12 +93,28 @@ impl Decision {
     }
 }
 
-/// Outcome of [`FuzzyStore::identify`].
+/// One identify request: the probe plus the request facts the engine needs.
+#[derive(Debug, Clone, Copy)]
+pub struct IdentifyContext<'a> {
+    /// The probe components.
+    pub components: &'a Components,
+    /// Unix milliseconds, stamped onto stored observations; the velocity
+    /// window keys on `now_ms / 1000`.
+    pub now_ms: u64,
+    /// The trusted client IP keying the cross-session velocity signal; `None`
+    /// leaves the band [`VelocityBand::Low`].
+    pub client_ip: Option<&'a str>,
+}
+
+/// Outcome of [`FuzzyStore::identify`] or [`FuzzyStore::score`].
 #[derive(Debug, Clone)]
 pub struct MatchOutcome {
-    /// Resolved device identifier (existing on match/review, freshly minted new).
-    pub visitor_id: String,
-    /// `true` only when a new `visitorId` was minted.
+    /// Resolved device identifier: the existing id on match/review. On a new
+    /// device, [`FuzzyStore::identify`] mints a random id (always `Some`);
+    /// the pure [`FuzzyStore::score`] mints nothing and returns `None`, leaving
+    /// id minting to the host that persists the device.
+    pub visitor_id: Option<String>,
+    /// `true` only when the verdict is [`Decision::NewDevice`].
     pub is_new_device: bool,
     /// Fused confidence in `[0, 1]` (fuzzy-matching §6).
     pub confidence: f64,
@@ -112,19 +126,22 @@ pub struct MatchOutcome {
     pub compared_components: usize,
     /// Whether a runner-up also cleared `T_hi` within `COLLISION_GAP`.
     pub collision_risk: bool,
-    /// Cross-session new-device production-rate band for the client IP, a risk
-    /// signal surfaced alongside `ip_risk` (never folded into identity). Always
-    /// [`VelocityBand::Low`] from [`FuzzyStore::score`] and the no-IP identify
-    /// path — the band is computed only by [`FuzzyStore::identify_with_ip`] when a
-    /// client IP is supplied and a new device is minted.
+    /// Whether a match was downgraded to [`Decision::Review`] because the probe
+    /// changed more than [`TEMPLATE_JUMP_MAX_HIGH_CHANGES`] High-stability
+    /// components of the matched template.
+    pub template_jump: bool,
+    /// Cross-session distinct new-device band for the client IP, a risk signal
+    /// surfaced alongside `ip_risk` (never folded into identity). Computed only
+    /// by [`FuzzyStore::identify`] when a client IP is supplied and a new device
+    /// is minted; [`VelocityBand::Low`] otherwise.
     pub new_device_velocity: VelocityBand,
-    /// Cross-session new-device production-rate band for the client's coarse JA4
-    /// **class** (proxy-pool farm footprint, PLAN-006 HARDEN-002), surfaced
-    /// alongside [`new_device_velocity`](MatchOutcome::new_device_velocity) —
-    /// never folded into identity, and (under the default fusion) never into
-    /// confidence either. Always [`VelocityBand::Low`] unless a JA4 is supplied to
-    /// [`FuzzyStore::identify_with_signals`] and a new device is minted.
-    pub new_device_velocity_ja4: VelocityBand,
+}
+
+/// A read-phase verdict, pinned to the state generation it was decided at.
+#[cfg(feature = "rng")]
+struct Pending {
+    generation: u64,
+    outcome: MatchOutcome,
 }
 
 /// Per-candidate stage-two score and its comparison count.
@@ -134,148 +151,90 @@ struct Scored {
 }
 
 impl FuzzyStore {
-    /// Identify `components`, folding the observation in per the verdict.
+    /// Identify a probe, folding the observation in per the verdict.
     ///
     /// Two-stage (fuzzy-matching §4/§5): recall candidates, score each with
-    /// Fellegi–Sunter, then apply the double-threshold decision (§5.4). A match
-    /// drifts the winning template (§7); a review returns the suspected visitor
-    /// without updating it (anti-poisoning, §7); a new device is minted and
-    /// stored. `now_ms` is Unix milliseconds for the stored timestamps.
+    /// Fellegi–Sunter, then apply the double-threshold decision (§5.4) and the
+    /// template-jump guard. A match drifts the winning template (§7); a review
+    /// returns the suspected visitor without updating it (anti-poisoning, §7);
+    /// a new device is stored under a freshly minted random 128-bit id
+    /// (32 lowercase hex chars) that is neither live nor erased.
     ///
-    /// **Atomicity:** the evaluate-then-observe read-modify-write
-    /// runs under one per-store guard, so concurrent `identify` calls cannot
-    /// interleave their `observe` between another call's `evaluate` and
-    /// `observe`. Each backend guards only its own state, so without this seam
-    /// the read (`evaluate`) and the write-back (`observe`) are two separate
-    /// atomic steps; a racing `observe` between them could change the frequency
-    /// material and thus perturb scores non-deterministically. The guard makes
-    /// the whole RMW a single critical section — the single-threaded outcome is
-    /// byte-for-byte unchanged, at the cost of serializing `identify`. The
-    /// deliberate trade-off: the read-only [`FuzzyStore::score`] path does **no**
-    /// `observe` and never takes this guard, so the stateless edge remains
-    /// lock-light and its parity/perf are unaffected.
-    pub fn identify(&self, components: &Value, now_ms: u64) -> MatchOutcome {
-        self.identify_with_signals(components, now_ms, None, None)
+    /// Only when the verdict is [`Decision::NewDevice`] and `client_ip` is
+    /// present, the new id is recorded against that IP and the trailing-window
+    /// distinct-id count is banded into [`MatchOutcome::new_device_velocity`]; a
+    /// [`VelocityBand::High`] band subtracts [`super::velocity_penalty`] from
+    /// confidence without touching the id or decision.
+    ///
+    /// **Concurrency:** recall and scoring run under the store's shared read
+    /// guard, so concurrent identifies score in parallel; the write-back then
+    /// takes the exclusive guard. Every write bumps a state generation: if the
+    /// state changed since the read phase, the verdict is re-decided against
+    /// the write-guarded state before anything is persisted, and a new id is
+    /// minted only after that final decision. So every write-back is decided
+    /// against the exact state it lands in:
+    /// - concurrent first sightings of one device yield one visitor — the
+    ///   later write re-decides and folds in as a match of the first;
+    /// - an identify racing an erase never resurrects the erased id — it
+    ///   re-decides (typically as a new device under a different id), and an
+    ///   erased id is tombstoned so it is never minted or recorded again.
+    #[cfg(feature = "rng")]
+    pub fn identify(&self, ctx: &IdentifyContext<'_>) -> MatchOutcome {
+        let pending = self.identify_read(ctx.components);
+        self.identify_write(ctx, pending)
     }
 
-    /// Identify `components`, additionally computing the per-IP cross-session
-    /// new-device velocity band for the supplied `client_ip` (PLAN-004 red-team
-    /// hardening). Thin wrapper over [`FuzzyStore::identify_with_signals`] with no
-    /// JA4 supplied — behaviourally unchanged from before HARDEN-002.
-    pub fn identify_with_ip(
-        &self,
-        components: &Value,
-        now_ms: u64,
-        client_ip: Option<&str>,
-    ) -> MatchOutcome {
-        self.identify_with_signals(components, now_ms, client_ip, None)
+    /// The read phase of [`identify`](Self::identify): the verdict and the
+    /// generation it was decided at.
+    #[cfg(feature = "rng")]
+    fn identify_read(&self, components: &Components) -> Pending {
+        let state = self.read();
+        Pending {
+            generation: state.generation,
+            outcome: self.evaluate(&state, components),
+        }
     }
 
-    /// Identify `components`, additionally computing the cross-session new-device
-    /// velocity bands for the supplied `client_ip` and raw `ja4` fingerprint.
-    ///
-    /// Behaves exactly like [`FuzzyStore::identify`] — same evaluate-then-observe
-    /// under the `identify_lock`, same persistence per verdict — and adds two
-    /// independent cross-session signals, both computed **only** when the verdict
-    /// is [`Decision::NewDevice`]:
-    ///
-    /// - **per-IP** (PLAN-004): when `client_ip` is present, records a new-device
-    ///   event for that IP and bands the trailing-window count into
-    ///   [`MatchOutcome::new_device_velocity`] via [`VelocityBand::classify`]. A
-    ///   [`VelocityBand::High`] rate — the fresh-seed-per-launch farm's footprint
-    ///   — applies the documented `VELOCITY_PENALTY` confidence downgrade, fused
-    ///   like `PassiveSignals::confidence_adjustment` (`signals.rs`).
-    /// - **per-JA4-class** (PLAN-006 HARDEN-002): when `ja4` parses to a coarse
-    ///   class ([`crate::signals::ja4_class`]), records a new-device event for
-    ///   that class *alongside* the IP key (namespaced so the two never collide in
-    ///   the shared store) and bands the count into
-    ///   [`MatchOutcome::new_device_velocity_ja4`] via
-    ///   [`VelocityBand::classify_ja4`] — deliberately far-higher thresholds,
-    ///   since a JA4 class is shared by every real client of a browser family.
-    ///   This catches a farm that rotates a residential proxy pool (defeating the
-    ///   per-IP key) but shares one Chrome JA4 class.
-    ///
-    /// **Fusion — option (a), surface-only (DELIBERATE, load-bearing):** the
-    /// JA4-class band is surfaced but applies **no** confidence change of its own,
-    /// even at [`VelocityBand::High`]. A JA4 class is low-entropy and shared by
-    /// *every* real Chrome user, so a lone High JA4-class band is the *expected*
-    /// steady state for any popular class — penalising it would downgrade all
-    /// normal Chrome traffic (a mass false positive). A safe confidence fusion
-    /// would require corroboration by an *independent* adverse signal (per-IP band
-    /// High, or a datacenter IP-risk verdict), but the per-IP `IpRisk` classifier
-    /// lives in the HTTP/edge adapter, not this core engine, and the target
-    /// adversary rides *residential* proxies (IP-risk Low) — so no safe composite
-    /// is defensible from here. Confidence fusion for the JA4-class band is
-    /// therefore deferred to a follow-up (L1/user decision); only the per-IP band
-    /// moves confidence.
-    ///
-    /// With both signals absent (or any non-`NewDevice` verdict) the outcome is
-    /// byte-identical to before: both bands stay [`VelocityBand::Low`] and no
-    /// confidence adjustment is applied, so an empty velocity store is cold-start
-    /// neutral. `now_ms` is Unix milliseconds; the velocity store keys on Unix
-    /// seconds (`now_ms / 1000`), keeping the core clock-free and deterministic.
-    pub fn identify_with_signals(
-        &self,
-        components: &Value,
-        now_ms: u64,
-        client_ip: Option<&str>,
-        ja4: Option<&str>,
-    ) -> MatchOutcome {
-        // Hold the guard across evaluate + observe so the RMW is atomic; recover
-        // from poisoning like the backend locks (a prior panic left no logical
-        // corruption — the `()` guard carries no state).
-        let _guard = self
-            .identify_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut outcome = self.evaluate(components);
+    /// The write phase of [`identify`](Self::identify): re-decide if the state
+    /// moved since `pending`, then persist per the final verdict.
+    #[cfg(feature = "rng")]
+    fn identify_write(&self, ctx: &IdentifyContext<'_>, pending: Pending) -> MatchOutcome {
+        let stored = self.stored_map(ctx.components);
+        let mut state = self.write();
+        let mut outcome = if state.generation == pending.generation {
+            pending.outcome
+        } else {
+            self.evaluate(&state, ctx.components)
+        };
         // Persist per the verdict (fuzzy-matching §7): a confirmed match drifts the
         // winning template toward this observation and a new device is stored
-        // under its freshly minted id; a review-band hit leaves the template
-        // untouched (anti-poisoning).
+        // under a freshly minted id; a review leaves the template untouched
+        // (anti-poisoning).
         match outcome.decision {
             Decision::Match => {
-                // Learn `m_i` material from this confirmed same-device pair
-                // (fuzzy-matching §9) BEFORE `observe` drifts the template, so the
-                // probe is compared against the template as it stood at the match.
-                self.record_agreement(&outcome.visitor_id, components);
-                self.observe(&outcome.visitor_id, components, now_ms);
+                if let Some(id) = outcome.visitor_id.clone() {
+                    // Learn `m_i` material from this confirmed same-device pair
+                    // (fuzzy-matching §9) BEFORE `observe` drifts the template, so the
+                    // probe is compared against the template as it stood at the match.
+                    self.record_agreement(&mut state, &id, ctx.components);
+                    self.observe_locked(&mut state, &id, stored, ctx.now_ms);
+                }
             }
             Decision::NewDevice => {
-                self.observe(&outcome.visitor_id, components, now_ms);
+                let id = mint_visitor_id(&state);
+                self.observe_locked(&mut state, &id, stored, ctx.now_ms);
                 // Cross-session velocity: a fresh device from a client IP that is
-                // churning out new devices is the farm footprint (RT-003). Record
-                // the event and band the trailing-window rate; a High rate
-                // downgrades confidence without touching identity.
-                if let Some(ip) = client_ip {
-                    let now_secs = now_ms / 1000;
-                    self.velocity.record(ip, now_secs);
-                    let n = self.velocity.count(ip, now_secs, velocity::WINDOW);
-                    outcome.new_device_velocity = VelocityBand::classify(n);
-                    if outcome.new_device_velocity == VelocityBand::High {
-                        outcome.confidence =
-                            (outcome.confidence - VELOCITY_PENALTY).clamp(0.0, 1.0);
-                    }
+                // churning out new devices is the farm footprint.
+                if let Some(ip) = ctx.client_ip {
+                    let now_secs = ctx.now_ms / 1000;
+                    state.velocity.record(ip, &id, now_secs);
+                    let n = state.velocity.count(ip, now_secs, super::velocity::WINDOW);
+                    let band = VelocityBand::classify(n);
+                    outcome.new_device_velocity = band;
+                    outcome.confidence =
+                        (outcome.confidence - super::velocity_penalty(band)).clamp(0.0, 1.0);
                 }
-                // Secondary JA4-class velocity (HARDEN-002): record ALONGSIDE the
-                // IP key, under the coarse JA4 shape class, to catch a farm that
-                // rotates a proxy pool but shares one Chrome JA4 class. The key is
-                // namespaced ("ja4:") so a class string can never collide with an
-                // IP key in the shared store.
-                //
-                // Fusion is option (a) — surface only: the band is set but NO
-                // confidence downgrade is applied on its own (not even at High).
-                // JA4 is low-entropy and shared by every real Chrome user, so a
-                // lone High JA4-class band is the expected steady state and must
-                // not penalise all Chrome traffic. Confidence fusion is deferred
-                // (see the method doc); only the per-IP band above moves confidence.
-                if let Some(class) = ja4.and_then(crate::signals::ja4_class) {
-                    let now_secs = now_ms / 1000;
-                    let key = format!("ja4:{class}");
-                    self.velocity.record(&key, now_secs);
-                    let n = self.velocity.count(&key, now_secs, velocity::WINDOW);
-                    outcome.new_device_velocity_ja4 = VelocityBand::classify_ja4(n);
-                }
+                outcome.visitor_id = Some(id);
             }
             Decision::Review => {}
         }
@@ -285,38 +244,34 @@ impl FuzzyStore {
     /// Score `components` and decide, **without mutating** the store (fuzzy-matching §5).
     ///
     /// The pure half of [`identify`](Self::identify): stage-one recall, Fellegi–Sunter scoring,
-    /// and the double-threshold decision. It returns the same [`MatchOutcome`]
-    /// `identify` would but leaves the record library, blocking index, and
-    /// frequency table untouched — the entry point a stateless edge host calls
-    /// to obtain a verdict before performing its own persistence (D1/DO
-    /// write-back) per the returned [`Decision`].
-    pub fn score(&self, components: &Value) -> MatchOutcome {
-        self.evaluate(components)
+    /// the double-threshold decision, and the template-jump guard. It returns
+    /// the verdict `identify` would reach but leaves every table untouched and
+    /// mints no id (`visitor_id` is `None` on a new device) — the entry point a
+    /// stateless edge host calls before performing its own persistence per the
+    /// returned [`Decision`].
+    pub fn score(&self, components: &Components) -> MatchOutcome {
+        self.evaluate(&self.read(), components)
     }
 
     /// Stage-one recall + stage-two scoring + decision for `components`, with no
     /// side effects. Shared by [`identify`] (which then persists) and [`score`]
-    /// (which does not).
+    /// (which does not), so both apply the same template-jump guard.
     ///
     /// [`identify`]: FuzzyStore::identify
     /// [`score`]: FuzzyStore::score
-    fn evaluate(&self, components: &Value) -> MatchOutcome {
-        let probe = self.stored_map(components);
+    fn evaluate(&self, state: &State, components: &Components) -> MatchOutcome {
+        let probe = self.stored_entries(components);
+        let probe_map = self.stored_map(components);
+        let keys = self.blocking_keys(&probe_map);
 
-        // Stage one: recall, then score every candidate against the probe.
-        let mut scored: Vec<(String, Scored)> = self
-            .candidates(components)
+        // Stage one: recall, then score every candidate template in place.
+        let mut scored: Vec<(&str, Scored)> = state
+            .blocking
+            .candidates(&keys)
             .into_iter()
-            .map(|id| {
-                let record = self.record(&id);
-                let s = record.map_or(
-                    Scored {
-                        score: f64::NEG_INFINITY,
-                        compared: 0,
-                    },
-                    |r| self.score_candidate(&probe, &r),
-                );
-                (id, s)
+            .filter_map(|id| {
+                let record = state.records.get(id)?;
+                Some((id, self.score_candidate(state, &probe, record)))
             })
             .collect();
         // Highest score first; a runner-up (if any) drives collision detection.
@@ -327,58 +282,41 @@ impl FuzzyStore {
         let best_score = best.map(|(_, s)| s.score);
         let compared = best.map_or(0, |(_, s)| s.compared);
 
-        let decision = match best_score {
+        let mut decision = match best_score {
             Some(s) if s >= T_HI => Decision::Match,
             Some(s) if s >= T_LO => Decision::Review,
             _ => Decision::NewDevice,
         };
+        // Template-jump guard: a match that changes too many High-stability
+        // components of its template is suspected, not confirmed.
+        let template_jump = decision == Decision::Match
+            && best
+                .and_then(|(id, _)| state.records.get(id))
+                .is_some_and(|record| is_template_jump(&probe_map, &record.components));
+        if template_jump {
+            decision = Decision::Review;
+        }
 
         let confidence = confidence(decision, best_score, second_score, compared);
+        let collision_risk = decision == Decision::Match
+            && best.is_some_and(|(_, top)| {
+                second_score.is_some_and(|s2| s2 >= T_HI && (top.score - s2) < COLLISION_GAP)
+            });
+        let visitor_id = match decision {
+            Decision::Match | Decision::Review => best.map(|(id, _)| (*id).to_owned()),
+            Decision::NewDevice => None,
+        };
 
-        // `decision` is `Match`/`Review` only when `best` is `Some`, so the
-        // matched arms always bind the winning candidate; the fallthrough covers
-        // `NewDevice` (and the unreachable no-candidate case).
-        match (decision, best) {
-            (Decision::Match, Some((id, top))) => {
-                let collision_risk =
-                    second_score.is_some_and(|s2| s2 >= T_HI && (top.score - s2) < COLLISION_GAP);
-                MatchOutcome {
-                    visitor_id: id.clone(),
-                    is_new_device: false,
-                    confidence,
-                    decision,
-                    score: best_score,
-                    compared_components: compared,
-                    collision_risk,
-                    new_device_velocity: VelocityBand::Low,
-                    new_device_velocity_ja4: VelocityBand::Low,
-                }
-            }
-            (Decision::Review, Some((id, _))) => MatchOutcome {
-                visitor_id: id.clone(),
-                is_new_device: false,
-                confidence,
-                decision,
-                score: best_score,
-                compared_components: compared,
-                collision_risk: false,
-                new_device_velocity: VelocityBand::Low,
-                new_device_velocity_ja4: VelocityBand::Low,
-            },
-            _ => {
-                let id = derive_visitor_id(components);
-                MatchOutcome {
-                    visitor_id: id,
-                    is_new_device: true,
-                    confidence,
-                    decision: Decision::NewDevice,
-                    score: best_score,
-                    compared_components: compared,
-                    collision_risk: false,
-                    new_device_velocity: VelocityBand::Low,
-                    new_device_velocity_ja4: VelocityBand::Low,
-                }
-            }
+        MatchOutcome {
+            visitor_id,
+            is_new_device: decision == Decision::NewDevice,
+            confidence,
+            decision,
+            score: best_score,
+            compared_components: compared,
+            collision_risk,
+            template_jump,
+            new_device_velocity: VelocityBand::Low,
         }
     }
 
@@ -386,9 +324,10 @@ impl FuzzyStore {
     /// template's stored values, accumulating the material behind `m_i`
     /// (fuzzy-matching §9).
     ///
-    /// Called only from the `Decision::Match` arm of [`identify`], under its lock
-    /// and **before** [`observe`] drifts the template, so it compares the probe
-    /// against the template as it stood when the match was confirmed. Each
+    /// Called only from the `Decision::Match` arm of [`identify`], under the
+    /// write guard and **before** [`observe`] drifts the template, so it
+    /// compares the probe against the template as it stood when the match was
+    /// confirmed. Each
     /// component present (and kind-compatible) on both sides contributes one
     /// same-device observation: agreement iff its similarity clears `τ` — the
     /// same threshold [`score_candidate`] uses. Names missing on either side, or
@@ -397,20 +336,26 @@ impl FuzzyStore {
     /// [`identify`]: FuzzyStore::identify
     /// [`observe`]: FuzzyStore::observe
     /// [`score_candidate`]: FuzzyStore::score_candidate
-    fn record_agreement(&self, visitor_id: &str, components: &Value) {
-        let Some(template) = self.record(visitor_id) else {
+    #[cfg(feature = "rng")]
+    fn record_agreement(&self, state: &mut State, visitor_id: &str, components: &Components) {
+        let Some(template) = state.records.get(visitor_id) else {
             return;
         };
-        let probe = self.stored_map(components);
-        for (name, probe_value) in &probe {
-            let Some(template_value) = template.components.get(name) else {
-                continue; // missing on the template side → not compared (§8)
-            };
-            let Some((sim, _u)) = self.compare(name, probe_value, template_value) else {
-                continue; // kind mismatch → not comparable
-            };
-            self.agreement.record(name, sim >= TAU);
+        let agreements: Vec<(Component, bool)> = self
+            .stored_entries(components)
+            .iter()
+            .filter_map(|(component, probe_value)| {
+                // Missing on the template side → not compared (§8).
+                let template_value = template.components.get(component.name())?;
+                // Kind mismatch → not comparable.
+                let (sim, _u) = self.compare(state, *component, probe_value, template_value)?;
+                Some((*component, sim >= TAU))
+            })
+            .collect();
+        for (component, agreed) in agreements {
+            state.agreement.record(component.name(), agreed);
         }
+        state.bump();
     }
 
     /// Fellegi–Sunter score of a candidate template against the probe (fuzzy-matching §5).
@@ -418,17 +363,23 @@ impl FuzzyStore {
     /// Sums the per-component log-likelihood weight over components present on
     /// both sides; components missing on either side are skipped, contributing
     /// zero (fuzzy-matching §5.3/§8).
-    fn score_candidate(&self, probe: &ProbeMap, template: &FingerprintRecord) -> Scored {
+    fn score_candidate(
+        &self,
+        state: &State,
+        probe: &[(Component, Stored)],
+        template: &FingerprintRecord,
+    ) -> Scored {
         let mut score = 0.0;
         let mut compared = 0;
-        for (name, probe_value) in probe {
-            let Some(template_value) = template.components.get(name) else {
+        for (component, probe_value) in probe {
+            let Some(template_value) = template.components.get(component.name()) else {
                 continue; // missing on the template side → not compared (§8)
             };
-            let Some((sim, u)) = self.compare(name, probe_value, template_value) else {
+            let Some((sim, u)) = self.compare(state, *component, probe_value, template_value)
+            else {
                 continue; // kind mismatch → not comparable
             };
-            let m = self.m_estimate(name, classify(name).stability.m_prior());
+            let m = m_estimate(state, component.name(), component.stability().m_prior());
             score += agreement_weight(m, u, sim);
             compared += 1;
         }
@@ -439,66 +390,71 @@ impl FuzzyStore {
     /// and the rarity `u_i` of the probe's value for that component
     /// (fuzzy-matching §5.1/§5.3). `None` if the two stored forms are of
     /// different kinds and cannot be compared.
-    fn compare(&self, name: &str, probe: &Stored, template: &Stored) -> Option<(f64, f64)> {
+    fn compare(
+        &self,
+        state: &State,
+        component: Component,
+        probe: &Stored,
+        template: &Stored,
+    ) -> Option<(f64, f64)> {
         match (probe, template) {
             (Stored::Category(a), Stored::Category(b)) => {
                 let sim = f64::from(u8::from(a == b));
-                Some((sim, self.u_estimate(name, *a)))
+                Some((sim, u_estimate(state, component, *a)))
             }
             (Stored::Numeric(a), Stored::Numeric(b)) => {
                 let sim = f64::from(u8::from(a == b));
-                Some((sim, self.u_estimate(name, self.salt.hash(&a.to_string()))))
+                Some((
+                    sim,
+                    u_estimate(state, component, self.salt.hash(&a.to_string())),
+                ))
             }
             (Stored::Set(a), Stored::Set(b)) => {
                 let j = jaccard(a, b);
                 // `J ≥ τ` counts as full agreement; below it, interpolate by J (§5.3).
                 let sim = if j >= TAU { 1.0 } else { j };
-                Some((sim, self.u_estimate(name, set_digest(a))))
+                Some((sim, u_estimate(state, component, set_digest(a))))
             }
             _ => None,
         }
     }
-
-    /// Estimate `u_i` for `value` of component `name`: its relative frequency
-    /// among that component's sightings (fuzzy-matching §5/§9), shrunk toward
-    /// the component's [`u_prior`] by [`U_PSEUDO`] pseudo-sightings and clamped
-    /// to keep the log-ratios finite.
-    ///
-    /// The denominator is the component's own sighting count: a value every
-    /// device shares reads as common (`u → 1`) instead of being diluted by the
-    /// number of components, and the prior keeps a cold or tiny library from
-    /// reading every value as either unique or universal.
-    #[allow(clippy::cast_precision_loss)] // frequency ratio; precision loss immaterial
-    fn u_estimate(&self, name: &str, value: Hash32) -> f64 {
-        let hits = self.frequency.count(name, value) as f64;
-        let total = self.frequency.total(name) as f64;
-        ((hits + U_PSEUDO * u_prior(name)) / (total + U_PSEUDO)).clamp(U_FLOOR, U_CEIL)
-    }
-
-    /// Estimate `m_i` for the component `name`: its observed same-device
-    /// agreement rate, shrunk toward the cold-start stability `prior` by an
-    /// `ALPHA`-weighted pseudo-count (fuzzy-matching §9).
-    ///
-    /// **Cold start is bit-identical:** with no recorded agreements
-    /// (`total == 0`) this returns the `prior` *exactly*, before any arithmetic,
-    /// so an empty store scores byte-for-byte as the fixed-prior path did. Once
-    /// confirmed same-device revisits accumulate, the estimate moves from the
-    /// prior toward the empirical rate; the clamp keeps it in `(0, 1)` so the
-    /// log-ratios stay finite.
-    #[allow(clippy::cast_precision_loss)] // agreement counts; precision loss immaterial
-    fn m_estimate(&self, name: &str, prior: f64) -> f64 {
-        let (agree, total) = self.agreement.stats(name);
-        if total == 0 {
-            return prior; // cold-start bit-identical
-        }
-        let est = (agree as f64 + ALPHA * prior) / (total as f64 + ALPHA);
-        est.clamp(M_FLOOR, M_CEIL)
-    }
 }
 
-/// Alias to name the probe map inside method signatures without leaking the
-/// `BTreeMap` spelling everywhere.
-type ProbeMap = std::collections::BTreeMap<String, Stored>;
+/// Estimate `u_i` for `value` of `component`: its relative frequency
+/// among that component's sightings (fuzzy-matching §5/§9), shrunk toward
+/// the component's [`Component::u_prior`] by [`U_PSEUDO`] pseudo-sightings and clamped
+/// to keep the log-ratios finite.
+///
+/// The denominator is the component's own sighting count: a value every
+/// device shares reads as common (`u → 1`) instead of being diluted by the
+/// number of components, and the prior keeps a cold or tiny library from
+/// reading every value as either unique or universal.
+#[allow(clippy::cast_precision_loss)] // frequency ratio; precision loss immaterial
+fn u_estimate(state: &State, component: Component, value: Hash32) -> f64 {
+    let hits = state.frequency.count(component.name(), value) as f64;
+    let total = state.frequency.total(component.name()) as f64;
+    ((hits + U_PSEUDO * component.u_prior()) / (total + U_PSEUDO)).clamp(U_FLOOR, U_CEIL)
+}
+
+/// Estimate `m_i` for the component `name`: its observed same-device
+/// agreement rate, shrunk toward the cold-start stability `prior` by an
+/// `ALPHA`-weighted pseudo-count (fuzzy-matching §9).
+///
+/// **Cold start is exact:** with no recorded agreements (`total == 0`) this
+/// returns the `prior` *exactly*, before any arithmetic, so an empty store
+/// scores on the fixed stability priors. Once
+/// confirmed same-device revisits accumulate, the estimate moves from the
+/// prior toward the empirical rate; the clamp keeps it in `(0, 1)` so the
+/// log-ratios stay finite.
+#[allow(clippy::cast_precision_loss)] // agreement counts; precision loss immaterial
+fn m_estimate(state: &State, name: &str, prior: f64) -> f64 {
+    let (agree, total) = state.agreement.stats(name);
+    if total == 0 {
+        return prior; // cold start: the exact prior
+    }
+    let est = (agree as f64 + ALPHA * prior) / (total as f64 + ALPHA);
+    est.clamp(M_FLOOR, M_CEIL)
+}
 
 /// Per-component Fellegi–Sunter weight in bits (fuzzy-matching §5.3).
 ///
@@ -521,8 +477,8 @@ fn agreement_weight(m: f64, u: f64, sim: f64) -> f64 {
 /// Three factors combine: how far the best score sits past its decision
 /// boundary, its separation from the runner-up, and the fraction of the probe's
 /// components that took part in scoring (a sparse probe is less certain, §8).
-/// The passive JA4/UA consistency input (fuzzy-matching §6) is a P2 signal, left
-/// neutral here.
+/// The passive JA4/UA consistency input (fuzzy-matching §6) is fused by the
+/// host on top of this value, not here.
 ///
 /// This is **decision confidence, not identity trust**. A first-ever
 /// device with no candidate is a confident `NewDevice` and can return a *high*
@@ -570,23 +526,80 @@ fn logistic(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Derive a fresh deterministic `visitorId` for a new device: the SHA-256 of the
-/// canonical component bytes, hex-encoded. Deterministic so an identical probe
-/// that somehow escaped recall still resolves to one id.
-fn derive_visitor_id(components: &Value) -> String {
-    let canonical = serde_json::to_vec(components).unwrap_or_default();
-    hex::encode(Sha256::digest(&canonical))
+/// Mint a random 128-bit `visitor_id` (32 lowercase hex chars) from the OS RNG,
+/// re-drawing while it names a live record or a tombstoned (erased) visitor.
+#[cfg(feature = "rng")]
+fn mint_visitor_id(state: &State) -> String {
+    use rand::{Rng, rng};
+    loop {
+        let mut bytes = [0u8; 16];
+        rng().fill_bytes(&mut bytes);
+        let id = hex::encode(bytes);
+        if state.records.get(&id).is_none() && !state.tombstones.contains(&id) {
+            return id;
+        }
+    }
+}
+
+/// Whether `probe` changes more than [`TEMPLATE_JUMP_MAX_HIGH_CHANGES`]
+/// High-stability components of `template`, over the stored forms keyed by
+/// component name. Only components present on both sides count; a set
+/// component disagrees when its Jaccard falls below `τ`.
+pub fn is_template_jump(
+    probe: &BTreeMap<String, Stored>,
+    template: &BTreeMap<String, Stored>,
+) -> bool {
+    let changes = Component::ALL
+        .into_iter()
+        .filter(|component| component.stability() == Stability::High)
+        .filter_map(|component| {
+            Some((
+                probe.get(component.name())?,
+                template.get(component.name())?,
+            ))
+        })
+        .filter(|(a, b)| match (a, b) {
+            (Stored::Set(a), Stored::Set(b)) => jaccard(a, b) < TAU,
+            _ => a != b,
+        })
+        .count();
+    changes > TEMPLATE_JUMP_MAX_HIGH_CHANGES
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, T_LO};
-    use crate::fuzzy::FuzzyStore;
-    use serde_json::{Value, json};
+    use super::{Decision, IdentifyContext, MatchOutcome, T_HI, T_LO};
+    use crate::fuzzy::{Component, Components, FuzzyStore};
+    use serde_json::json;
+
+    fn components(value: serde_json::Value) -> Components {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn identify(store: &FuzzyStore, components: &Components, now_ms: u64) -> MatchOutcome {
+        store.identify(&IdentifyContext {
+            components,
+            now_ms,
+            client_ip: None,
+        })
+    }
+
+    fn identify_from(
+        store: &FuzzyStore,
+        components: &Components,
+        now_ms: u64,
+        ip: &str,
+    ) -> MatchOutcome {
+        store.identify(&IdentifyContext {
+            components,
+            now_ms,
+            client_ip: Some(ip),
+        })
+    }
 
     /// A full, high-signal probe (8 components across all three kinds).
-    fn full_probe() -> Value {
-        json!({
+    fn full_probe() -> Components {
+        components(json!({
             "webgl": "ANGLE (Intel)",
             "platform": "Linux x86_64",
             "timezone": "Asia/Shanghai",
@@ -594,8 +607,8 @@ mod tests {
             "cpu_cores": 8,
             "device_memory": 8,
             "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"],
-            "user_agent": "Chrome/120",
-        })
+            "canvas": "c0ffee",
+        }))
     }
 
     /// (b) Anti-collision: two different devices that collide on a blocking key
@@ -604,11 +617,11 @@ mod tests {
     #[test]
     fn b_shared_block_but_distinct_device_is_not_merged() {
         let store = FuzzyStore::new();
-        let first = store.identify(&full_probe(), 1_000);
+        let first = identify(&store, &full_probe(), 1_000);
 
         // Same K2 subset (audio + cpu_cores + device_memory) so `first` is
         // recalled, but every high-stability discriminant disagrees.
-        let other = json!({
+        let other = components(json!({
             "webgl": "Mali-G78",
             "platform": "Linux armv8",
             "timezone": "America/New_York",
@@ -616,12 +629,16 @@ mod tests {
             "cpu_cores": 8,
             "device_memory": 8,
             "fonts": ["Roboto", "Noto", "Droid", "Ubuntu"],
-            "user_agent": "Firefox/119",
-        });
+            "canvas": "f00d",
+        }));
         // The collision is real at stage one: `first` is in the candidate set.
-        assert!(store.candidates(&other).contains(&first.visitor_id));
+        assert!(
+            store
+                .candidates(&other)
+                .contains(first.visitor_id.as_deref().unwrap())
+        );
 
-        let second = store.identify(&other, 2_000);
+        let second = identify(&store, &other, 2_000);
         assert_eq!(second.decision, Decision::NewDevice);
         assert!(second.is_new_device);
         assert_ne!(second.visitor_id, first.visitor_id);
@@ -633,11 +650,11 @@ mod tests {
     #[test]
     fn c_low_entropy_only_overlap_does_not_merge() {
         let store = FuzzyStore::new();
-        let low = json!({
+        let low = components(json!({
             "platform": "Linux x86_64",
             "timezone": "Asia/Shanghai",
             "languages": "en-US",
-        });
+        }));
         // A crowd shares these exact low-entropy values, inflating their `u_i`.
         for i in 0..30 {
             store.observe(&format!("bg{i}"), &low, 1_000);
@@ -646,7 +663,7 @@ mod tests {
         // The victim is recalled against the crowd (they share the K0 key)...
         assert!(!store.candidates(&low).is_empty());
         // ...but the common agreements never clear T_lo, so it is judged new.
-        let out = store.identify(&low, 2_000);
+        let out = identify(&store, &low, 2_000);
         assert_eq!(out.decision, Decision::NewDevice);
         assert!(out.is_new_device);
         assert!(out.score.unwrap() < T_LO, "score was {:?}", out.score);
@@ -659,8 +676,8 @@ mod tests {
     #[test]
     fn review_band_hit_does_not_drift_the_template() {
         let store = FuzzyStore::new();
-        let seed = store.identify(&full_probe(), 1_000);
-        let id = seed.visitor_id.clone();
+        let seed = identify(&store, &full_probe(), 1_000);
+        let id = seed.visitor_id.clone().unwrap();
 
         let before = store.record(&id).unwrap();
         assert_eq!(before.last_seen, 1_000);
@@ -668,16 +685,16 @@ mod tests {
         // A probe agreeing on only the stable K1 subset plus audio and
         // cpu_cores scores in the review band: enough evidence to suspect `id`,
         // not enough to confirm and drift it.
-        let review_probe = json!({
+        let review_probe = components(json!({
             "webgl": "ANGLE (Intel)",
             "platform": "Linux x86_64",
             "timezone": "Asia/Shanghai",
             "audio": "124.04",
             "cpu_cores": 8,
-        });
-        let review = store.identify(&review_probe, 5_000);
+        }));
+        let review = identify(&store, &review_probe, 5_000);
         assert_eq!(review.decision, Decision::Review);
-        assert_eq!(review.visitor_id, id);
+        assert_eq!(review.visitor_id.as_deref(), Some(id.as_str()));
 
         // The template is untouched: same last_seen, components, and count.
         let after = store.record(&id).unwrap();
@@ -689,15 +706,15 @@ mod tests {
         assert_eq!(after.components, before.components);
 
         // Bracket the gate: a genuine `≥ T_hi` match DOES advance the template.
-        let confirm = store.identify(&full_probe(), 9_000);
+        let confirm = identify(&store, &full_probe(), 9_000);
         assert_eq!(confirm.decision, Decision::Match);
         assert_eq!(store.record(&id).unwrap().last_seen, 9_000);
     }
 
     /// (concurrency) Many threads hammer `identify` against one shared store
-    /// with a mix of the same and distinct devices. `identify`'s evaluate +
-    /// observe run under the per-store guard, so the concurrent read-modify-write
-    /// stays atomic. The store must end in a consistent state: no panic, one
+    /// with a mix of the same and distinct devices. Scoring runs under the shared
+    /// guard and each write-back under the exclusive one, so no write is torn or
+    /// lost. The store must end in a consistent state: no panic, one
     /// stable record per distinct device, every observation folded in exactly
     /// once, and a re-identify of an already-seen full probe still Matches its id.
     #[test]
@@ -714,10 +731,10 @@ mod tests {
         // Distinct full devices. Each recalls only itself (disjoint blocking
         // keys), so every identify is a Match — or the one-time NewDevice — that
         // folds an observation in, never a Review, and no two ever cross-match.
-        let devices: Arc<Vec<Value>> = Arc::new(
+        let devices: Arc<Vec<Components>> = Arc::new(
             (0..8)
                 .map(|i| {
-                    json!({
+                    components(json!({
                         "webgl": format!("ANGLE (Vendor {i})"),
                         "platform": format!("Platform-{i}"),
                         "timezone": format!("Zone/{i}"),
@@ -728,8 +745,8 @@ mod tests {
                             format!("F{i}a"), format!("F{i}b"), format!("F{i}c"),
                             format!("F{i}d"), format!("F{i}e"),
                         ],
-                        "user_agent": format!("Agent/{i}"),
-                    })
+                        "canvas": format!("canvas-{i}"),
+                    }))
                 })
                 .collect(),
         );
@@ -746,17 +763,16 @@ mod tests {
                     let mut local = HashSet::new();
                     for i in 0..ITERS {
                         // Every thread hammers every device, interleaving the
-                        // same-device evaluate/observe across threads — the raced
-                        // RMW the guard serializes.
+                        // same-device evaluate/observe across threads.
                         for (d, probe) in devices.iter().enumerate() {
                             let now = 1_000 + (t as u64) * 1_000_000 + i * 1_000 + d as u64;
-                            let out = store.identify(probe, now);
+                            let out = identify(&store, probe, now);
                             assert!(
                                 matches!(out.decision, Decision::Match | Decision::NewDevice),
                                 "unexpected {:?} for device {d}",
                                 out.decision,
                             );
-                            local.insert((d, out.visitor_id));
+                            local.insert((d, out.visitor_id.unwrap()));
                         }
                     }
                     seen.lock().unwrap().extend(local);
@@ -787,32 +803,84 @@ mod tests {
         // Reproducibility: after all the churn, re-identifying any full device
         // still Matches its established id.
         for (d, probe) in devices.iter().enumerate() {
-            let out = store.identify(probe, 9_000_000);
+            let out = identify(&store, probe, 9_000_000);
             assert_eq!(out.decision, Decision::Match, "re-identify device {d}");
-            assert!(seen.contains(&(d, out.visitor_id)));
+            assert!(seen.contains(&(d, out.visitor_id.unwrap())));
         }
     }
 
+    /// Single-threaded identify is deterministic: two stores with the same
+    /// secret, fed the same sequence (matches, a review, new devices, drift),
+    /// produce identical outcomes step by step. Minted ids are random, so ids
+    /// are compared as labels in order of first appearance.
+    #[test]
+    fn single_threaded_identify_is_deterministic() {
+        let sequence: Vec<Components> = (0..30u64)
+            .map(|i| {
+                let mut p = full_probe();
+                match i % 5 {
+                    0 => {}
+                    1 => p.canvas = Some(format!("noise-{i}")),
+                    2 => p.webgl = Some(format!("GPU {}", i % 3)),
+                    3 => {
+                        p.fonts = None;
+                        p.device_memory = None;
+                        p.canvas = None;
+                    }
+                    _ => p.timezone = Some(format!("Zone/{i}")),
+                }
+                p
+            })
+            .collect();
+        let run = || {
+            let store = FuzzyStore::deterministic(b"determinism");
+            let mut labels: Vec<String> = Vec::new();
+            sequence
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let o = identify(&store, p, 1_000 + i as u64);
+                    let id = o.visitor_id.unwrap();
+                    let label = labels.iter().position(|l| *l == id).unwrap_or_else(|| {
+                        labels.push(id);
+                        labels.len() - 1
+                    });
+                    (
+                        label,
+                        o.decision,
+                        o.score.map(f64::to_bits),
+                        o.confidence.to_bits(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let first = run();
+        assert_eq!(first, run());
+        // The sequence exercises more than one verdict.
+        assert!(first.iter().any(|o| o.1 == Decision::Match));
+        assert!(first.iter().any(|o| o.1 == Decision::NewDevice));
+    }
+
     /// Cold start is prior-driven: on a fresh store the agreement table is empty
-    /// during the matching `evaluate`, so `m_estimate` returns the prior exactly
-    /// (bit-identity is proven cross-stack in MI-003). The first identify mints a
+    /// during the matching `evaluate`, so `m_estimate` returns the prior exactly.
+    /// The first identify mints a
     /// device; the second still Matches it, and only then does the Match-hook
     /// populate the agreement material.
     #[test]
     fn cold_start_matches_on_priors_then_records_agreement() {
         let store = FuzzyStore::new();
         // Nothing learned yet: the estimate is the untouched prior.
-        assert_eq!(store.agreement.stats("webgl"), (0, 0));
+        assert_eq!(store.read().agreement.stats("webgl"), (0, 0));
 
-        let first = store.identify(&full_probe(), 1_000);
+        let first = identify(&store, &full_probe(), 1_000);
         assert!(first.is_new_device); // NewDevice does not record agreement
-        assert_eq!(store.agreement.stats("webgl"), (0, 0));
+        assert_eq!(store.read().agreement.stats("webgl"), (0, 0));
 
-        let second = store.identify(&full_probe(), 2_000);
+        let second = identify(&store, &full_probe(), 2_000);
         assert_eq!(second.decision, Decision::Match);
         assert_eq!(second.visitor_id, first.visitor_id);
         // The Match-hook fired: webgl agreed on this same-device revisit.
-        assert_eq!(store.agreement.stats("webgl"), (1, 1));
+        assert_eq!(store.read().agreement.stats("webgl"), (1, 1));
     }
 
     /// A high-stability component that agrees on every confirmed same-device
@@ -820,27 +888,25 @@ mod tests {
     /// prior up toward `M_CEIL` as the empirical rate reinforces it (fuzzy-matching §9).
     #[test]
     fn repeated_same_device_matches_lift_m_estimate() {
-        use crate::fuzzy::classify;
-
         let store = FuzzyStore::new();
-        let prior = classify("webgl").stability.m_prior();
+        let prior = Component::Webgl.stability().m_prior();
 
         // Seed the device, then revisit it repeatedly with the identical probe —
         // every revisit is a Match that records webgl as agreeing.
-        store.identify(&full_probe(), 1_000);
+        identify(&store, &full_probe(), 1_000);
         for i in 0..10 {
-            let out = store.identify(&full_probe(), 2_000 + i);
+            let out = identify(&store, &full_probe(), 2_000 + i);
             assert_eq!(out.decision, Decision::Match);
         }
 
         // Ten confirmed same-device agreements accumulated.
-        assert_eq!(store.agreement.stats("webgl"), (10, 10));
+        assert_eq!(store.read().agreement.stats("webgl"), (10, 10));
         // The estimate has climbed above the cold prior toward the ceiling.
-        let est = store.m_estimate("webgl", prior);
+        let est = super::m_estimate(&store.read(), "webgl", prior);
         assert!(est > prior, "m_estimate {est} should exceed prior {prior}");
         assert!(est < super::M_CEIL);
         // An unlearned component still returns its untouched prior exactly.
-        assert!((store.m_estimate("plugins", 0.8) - 0.8).abs() < f64::EPSILON);
+        assert!((super::m_estimate(&store.read(), "plugins", 0.8) - 0.8).abs() < f64::EPSILON);
     }
 
     /// Learning is monotone: each confirmed same-device revisit of an
@@ -849,15 +915,13 @@ mod tests {
     /// (fuzzy-matching §9).
     #[test]
     fn m_estimate_climbs_monotonically_across_same_device_revisits() {
-        use crate::fuzzy::classify;
-
         let store = FuzzyStore::new();
-        let prior = classify("webgl").stability.m_prior();
+        let prior = Component::Webgl.stability().m_prior();
 
         // Mint the device: NewDevice records no agreement, so the estimate is
         // still the untouched cold prior, bit-for-bit.
-        store.identify(&full_probe(), 1_000);
-        let mut prev = store.m_estimate("webgl", prior);
+        identify(&store, &full_probe(), 1_000);
+        let mut prev = super::m_estimate(&store.read(), "webgl", prior);
         assert!(
             (prev - prior).abs() < f64::EPSILON,
             "cold start returns the prior exactly"
@@ -866,9 +930,9 @@ mod tests {
         // Every identical revisit is a Match that records webgl agreeing, lifting
         // the estimate a little further each time.
         for i in 0..12 {
-            let out = store.identify(&full_probe(), 2_000 + i);
+            let out = identify(&store, &full_probe(), 2_000 + i);
             assert_eq!(out.decision, Decision::Match);
-            let est = store.m_estimate("webgl", prior);
+            let est = super::m_estimate(&store.read(), "webgl", prior);
             assert!(
                 est > prev,
                 "estimate must rise each revisit: {prev} -> {est}"
@@ -893,7 +957,7 @@ mod tests {
     #[test]
     fn score_stays_finite_when_m_is_driven_to_the_clamp() {
         let store = FuzzyStore::new();
-        store.identify(&full_probe(), 1_000);
+        identify(&store, &full_probe(), 1_000);
 
         // Drive every component's agreement well past the point where the smoothed
         // estimate would exceed the ceiling, so each `m_estimate` clamps at M_CEIL.
@@ -905,13 +969,13 @@ mod tests {
             "cpu_cores",
             "device_memory",
             "fonts",
-            "user_agent",
+            "canvas",
         ] {
             for _ in 0..20_000 {
-                store.agreement.record(name, true);
+                store.write().agreement.record(name, true);
             }
             assert!(
-                (store.m_estimate(name, 0.95) - super::M_CEIL).abs() < 1e-9,
+                (super::m_estimate(&store.read(), name, 0.95) - super::M_CEIL).abs() < 1e-9,
                 "{name} m_estimate should clamp to M_CEIL"
             );
         }
@@ -923,55 +987,53 @@ mod tests {
         assert!(super::agreement_weight(super::M_CEIL, super::U_CEIL, 0.0).is_finite());
 
         // A real identify with every `m` at the clamp still produces a finite score.
-        let out = store.identify(&full_probe(), 2_000);
+        let out = identify(&store, &full_probe(), 2_000);
         assert_eq!(out.decision, Decision::Match);
         let matched_score = out.score.expect("a matched candidate has a score");
         assert!(matched_score.is_finite(), "score was {matched_score}");
     }
 
     /// A churning component that never agrees earns *less* trust than its cold
-    /// prior: the stable components carry each match, but the flaky `user_agent`
+    /// prior: the stable components carry each match, but the re-noised `canvas`
     /// disagrees on every confirmed revisit, so its `m_estimate` is pulled below
     /// the prior (fuzzy-matching §9).
     #[test]
     fn churning_component_m_estimate_falls_below_its_prior() {
-        use crate::fuzzy::classify;
-
         let store = FuzzyStore::new();
-        let ua_prior = classify("user_agent").stability.m_prior();
+        let canvas_prior = Component::Canvas.stability().m_prior();
 
         // Seed the device, then revisit with the stable components unchanged (they
-        // carry the match) but a fresh user_agent each time, so it never agrees.
-        store.identify(&full_probe(), 1_000);
+        // carry the match) but a fresh canvas each time, so it never agrees.
+        identify(&store, &full_probe(), 1_000);
         for i in 0..12 {
             let mut probe = full_probe();
-            probe["user_agent"] = json!(format!("Chrome/{}", 200 + i));
-            let out = store.identify(&probe, 2_000 + i);
+            probe.canvas = Some(format!("noise-{i}"));
+            let out = identify(&store, &probe, 2_000 + i);
             assert_eq!(
                 out.decision,
                 Decision::Match,
-                "stable components must carry the match while UA churns"
+                "stable components must carry the match while canvas churns"
             );
         }
 
-        let (agree, total) = store.agreement.stats("user_agent");
-        assert_eq!(agree, 0, "user_agent never agreed");
+        let (agree, total) = store.read().agreement.stats("canvas");
+        assert_eq!(agree, 0, "canvas never agreed");
         assert!(
             total >= 12,
             "every revisit recorded a same-device comparison"
         );
-        let est = store.m_estimate("user_agent", ua_prior);
+        let est = super::m_estimate(&store.read(), "canvas", canvas_prior);
         assert!(
-            est < ua_prior,
-            "churning estimate {est} should fall below prior {ua_prior}"
+            est < canvas_prior,
+            "churning estimate {est} should fall below prior {canvas_prior}"
         );
     }
 
     /// A distinct full probe per index: every high-stability discriminant differs,
     /// so each recalls no prior device and is minted as a brand-new device — the
     /// fresh-seed-per-launch farm's per-session footprint.
-    fn distinct_probe(i: u64) -> Value {
-        json!({
+    fn distinct_probe(i: u64) -> Components {
+        components(json!({
             "webgl": format!("ANGLE (Vendor {i})"),
             "platform": format!("Platform-{i}"),
             "timezone": format!("Zone/{i}"),
@@ -982,18 +1044,17 @@ mod tests {
                 format!("F{i}a"), format!("F{i}b"), format!("F{i}c"),
                 format!("F{i}d"), format!("F{i}e"),
             ],
-            "user_agent": format!("Agent/{i}"),
-        })
+            "canvas": format!("canvas-{i}"),
+        }))
     }
 
-    /// (RT-003) The cross-session catch: one client IP minting a burst of fresh
-    /// devices inside the window crosses to [`VelocityBand::High`] and takes the
-    /// documented confidence downgrade — while its decision/visitorId are
-    /// untouched. This is what RT-001's per-session
-    /// `fresh_seed_per_launch_each_mints_a_new_device` baseline cannot see.
+    /// The cross-session catch: one client IP minting a burst of fresh devices
+    /// inside the window crosses to [`VelocityBand::High`] and takes the
+    /// documented confidence downgrade — while its decision and `visitor_id` are
+    /// untouched. A per-session view (each launch a new device) cannot see this.
     #[test]
     fn burst_of_new_devices_from_one_ip_crosses_to_high_and_downgrades() {
-        use super::velocity::HIGH;
+        use crate::fuzzy::velocity::HIGH;
 
         let store = FuzzyStore::new();
         let ip = "203.0.113.9";
@@ -1003,7 +1064,7 @@ mod tests {
         let mut last = None;
         for i in 0..HIGH {
             let probe = distinct_probe(i);
-            let out = store.identify_with_ip(&probe, 1_000_000 + i * 1_000, Some(ip));
+            let out = identify_from(&store, &probe, 1_000_000 + i * 1_000, ip);
             assert_eq!(out.decision, Decision::NewDevice, "device {i}");
             assert!(out.is_new_device);
             last = Some(out);
@@ -1013,7 +1074,7 @@ mod tests {
         // A no-candidate NewDevice's neutral confidence is 0.5; the High band
         // subtracts the documented penalty, fused like the passive adjustment.
         assert!(
-            (last.confidence - (0.5 - super::VELOCITY_PENALTY)).abs() < 1e-9,
+            (last.confidence - (0.5 - super::super::VELOCITY_PENALTY)).abs() < 1e-9,
             "confidence was {}",
             last.confidence,
         );
@@ -1024,7 +1085,7 @@ mod tests {
     /// downgrade is applied.
     #[test]
     fn new_devices_spread_beyond_the_window_stay_low() {
-        use super::velocity::{HIGH, WINDOW};
+        use crate::fuzzy::velocity::{HIGH, WINDOW};
 
         let store = FuzzyStore::new();
         let ip = "203.0.113.10";
@@ -1035,7 +1096,7 @@ mod tests {
         let mut last = None;
         for i in 0..HIGH {
             let probe = distinct_probe(i);
-            let out = store.identify_with_ip(&probe, 1_000_000 + i * step_ms, Some(ip));
+            let out = identify_from(&store, &probe, 1_000_000 + i * step_ms, ip);
             assert_eq!(out.decision, Decision::NewDevice, "device {i}");
             last = Some(out);
         }
@@ -1047,77 +1108,219 @@ mod tests {
         );
     }
 
-    /// A real-browser JA4 (Chrome-over-HTTP/2 shape); its coarse class
-    /// (`t13dh2`) is shared by every real client of that family.
-    const BROWSER_JA4: &str = "t13d1516h2_8daaf6152771_02713d6af862";
-
-    /// (HARDEN-002) The proxy-pool farm catch: many fresh devices that share ONE
-    /// coarse JA4 class — each from a different (here absent) IP — drive the
-    /// per-class velocity band up through its far-higher thresholds. This is the
-    /// footprint the per-IP key (RT-003) misses when a farm rotates a residential
-    /// proxy pool but keeps one Chrome JA4 class. The band rises (crossing MEDIUM,
-    /// then HIGH) while the per-IP band and — under fusion (a) — confidence stay
-    /// untouched.
-    #[test]
-    fn burst_sharing_one_ja4_class_rises_but_band_only_never_downgrades() {
-        use super::velocity::{JA4_HIGH, JA4_MEDIUM};
-
-        let store = FuzzyStore::new();
-
-        let mut at_medium = None;
-        let mut last = None;
-        for i in 0..JA4_HIGH {
-            let probe = distinct_probe(i);
-            // No client IP: the JA4-class band must rise on its own, with NO
-            // per-IP corroboration — the load-bearing lone-High case.
-            let out =
-                store.identify_with_signals(&probe, 1_000_000 + i * 1_000, None, Some(BROWSER_JA4));
-            assert_eq!(out.decision, Decision::NewDevice, "device {i}");
-            // The per-IP band never moves (no IP supplied).
-            assert_eq!(out.new_device_velocity, super::VelocityBand::Low);
-            if i + 1 == JA4_MEDIUM {
-                at_medium = Some(out.clone());
-            }
-            last = Some(out);
+    fn ctx(components: &Components, now_ms: u64) -> IdentifyContext<'_> {
+        IdentifyContext {
+            components,
+            now_ms,
+            client_ip: None,
         }
+    }
 
-        // Crossing MEDIUM: the per-class band is Medium at the documented threshold.
-        assert_eq!(
-            at_medium.unwrap().new_device_velocity_ja4,
-            super::VelocityBand::Medium
-        );
+    fn is_lower_hex_128(id: &str) -> bool {
+        id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    }
 
-        // Crossing HIGH: the per-class band reaches High...
+    /// Identical first sightings in separate stores get unrelated random ids.
+    #[test]
+    fn minted_ids_are_random_128_bit_lower_hex() {
+        let a = identify(&FuzzyStore::new(), &full_probe(), 1_000);
+        let b = identify(&FuzzyStore::new(), &full_probe(), 1_000);
+        let (a, b) = (a.visitor_id.unwrap(), b.visitor_id.unwrap());
+        assert!(is_lower_hex_128(&a), "{a}");
+        assert!(is_lower_hex_128(&b), "{b}");
+        assert_ne!(a, b);
+    }
+
+    /// An erased id never recurs: the same device afterwards is a new device
+    /// under a different id.
+    #[test]
+    fn identify_after_erase_mints_a_different_id() {
+        let store = FuzzyStore::new();
+        let first = identify(&store, &full_probe(), 1_000).visitor_id.unwrap();
+        assert!(store.erase(&first));
+        let again = identify(&store, &full_probe(), 2_000);
+        assert!(again.is_new_device);
+        assert_ne!(again.visitor_id.unwrap(), first);
+        assert!(store.record(&first).is_none());
+    }
+
+    /// The pure scoring path never mints an id.
+    #[test]
+    fn score_on_an_empty_store_returns_no_id() {
+        let out = FuzzyStore::new().score(&full_probe());
+        assert_eq!(out.decision, Decision::NewDevice);
+        assert!(out.is_new_device);
+        assert!(out.visitor_id.is_none());
+    }
+
+    /// One device revisiting from one IP is never a new device again, so it
+    /// never feeds the velocity band.
+    #[test]
+    fn one_device_revisiting_from_one_ip_never_raises_the_band() {
+        let store = FuzzyStore::new();
+        let ip = "203.0.113.20";
+        for i in 0..50 {
+            let out = identify_from(&store, &full_probe(), 1_000_000 + i * 1_000, ip);
+            assert_eq!(
+                out.new_device_velocity,
+                super::VelocityBand::Low,
+                "visit {i}"
+            );
+            if i > 0 {
+                assert_eq!(out.decision, Decision::Match, "visit {i}");
+            }
+        }
+    }
+
+    /// Distinct new devices from one IP reach High, and the High band costs
+    /// exactly the documented penalty against the same probe with no IP.
+    #[test]
+    fn distinct_new_devices_from_one_ip_reach_high_and_cost_the_penalty() {
+        let store = FuzzyStore::new();
+        let ip = "203.0.113.21";
+        let mut last = None;
+        for i in 0..25 {
+            last = Some(identify_from(
+                &store,
+                &distinct_probe(i),
+                1_000_000 + i * 1_000,
+                ip,
+            ));
+        }
         let last = last.unwrap();
-        assert_eq!(last.new_device_velocity_ja4, super::VelocityBand::High);
-        // ...yet confidence is UNTOUCHED. Fusion (a): a lone High JA4-class band,
-        // with no IP-High and no datacenter IP risk, must NOT downgrade confidence
-        // — else every popular real Chrome class would be penalised. A
-        // no-candidate NewDevice's neutral confidence is 0.5, unchanged here.
+        assert_eq!(last.new_device_velocity, super::VelocityBand::High);
+        let baseline = identify(&FuzzyStore::new(), &distinct_probe(24), 1_024_000);
         assert!(
-            (last.confidence - 0.5).abs() < 1e-9,
-            "lone High JA4 band must not downgrade confidence; was {}",
+            (baseline.confidence - last.confidence - super::super::VELOCITY_PENALTY).abs() < 1e-9,
+            "baseline {} vs banded {}",
+            baseline.confidence,
             last.confidence,
         );
     }
 
-    /// No (or unparseable) JA4 is neutral for the per-class band: no event is
-    /// recorded, the band stays [`VelocityBand::Low`], and confidence is
-    /// untouched — an empty JA4 velocity store is cold-start neutral, so the
-    /// parity vectors stay byte-identical.
+    /// A rich probe (18 components): many agreeing components keep the score
+    /// past `T_hi` even when several High-stability components change.
+    fn rich_probe() -> Components {
+        components(json!({
+            "webgl": "ANGLE (Intel)",
+            "platform": "Linux x86_64",
+            "timezone": "Asia/Shanghai",
+            "languages": "en-US",
+            "audio": "124.04",
+            "cpu_cores": 8,
+            "device_memory": 8,
+            "fonts": ["Arial", "Helvetica", "Courier", "Times", "Verdana"],
+            "canvas": "c0ffee",
+            "screen": "1920x1080",
+            "webgl_extensions": "ext-hash-1",
+            "user_agent_data": "uad-hash-1",
+            "font_preferences": "fp-hash-1",
+            "screen_frame": "sf-hash-1",
+            "math": "math-hash-1",
+            "touch_support": "ts-hash-1",
+            "dom_blockers": "db-hash-1",
+            "plugins": ["PDF Viewer", "Chrome PDF Viewer"],
+        }))
+    }
+
+    /// Changing three High-stability components of a matched template is a
+    /// template jump: the strong match is downgraded to Review, flagged, and
+    /// the template is left untouched — in `score` and `identify` alike.
     #[test]
-    fn absent_or_malformed_ja4_keeps_the_class_band_low_and_neutral() {
+    fn three_high_component_changes_are_a_template_jump() {
         let store = FuzzyStore::new();
+        let id = identify(&store, &rich_probe(), 1_000).visitor_id.unwrap();
+        let before = store.record(&id).unwrap();
 
-        // No JA4 at all (an IP is present, exercising the IP path independently).
-        let out =
-            store.identify_with_signals(&distinct_probe(1), 1_000_000, Some("198.51.100.7"), None);
-        assert_eq!(out.new_device_velocity_ja4, super::VelocityBand::Low);
+        let mut jump = rich_probe();
+        jump.webgl = Some("Mali-G78".into());
+        jump.platform = Some("Linux armv8".into());
+        jump.languages = Some("de-DE".into());
 
-        // A malformed JA4 parses to no class → no event recorded → band stays Low.
-        let out2 =
-            store.identify_with_signals(&distinct_probe(2), 1_000_100, None, Some("garbage"));
-        assert_eq!(out2.new_device_velocity_ja4, super::VelocityBand::Low);
-        assert!((out2.confidence - 0.5).abs() < 1e-9);
+        let scored = store.score(&jump);
+        assert!(scored.score.unwrap() >= T_HI, "score {:?}", scored.score);
+        assert_eq!(scored.decision, Decision::Review);
+        assert!(scored.template_jump);
+
+        let out = identify(&store, &jump, 2_000);
+        assert_eq!(out.decision, Decision::Review);
+        assert!(out.template_jump);
+        assert!(!out.is_new_device);
+        assert_eq!(out.visitor_id.as_deref(), Some(id.as_str()));
+        assert_eq!(store.record(&id).unwrap(), before);
+        assert_eq!(store.read().agreement.stats("webgl"), (0, 0));
+    }
+
+    /// Two High-stability changes stay within the guard and still match.
+    #[test]
+    fn two_high_component_changes_still_match() {
+        let store = FuzzyStore::new();
+        let id = identify(&store, &rich_probe(), 1_000).visitor_id.unwrap();
+        let mut probe = rich_probe();
+        probe.webgl = Some("Mali-G78".into());
+        probe.platform = Some("Linux armv8".into());
+        let out = identify(&store, &probe, 2_000);
+        assert_eq!(out.decision, Decision::Match);
+        assert!(!out.template_jump);
+        assert_eq!(out.visitor_id.as_deref(), Some(id.as_str()));
+    }
+
+    /// Drift moves the template but never the first-observation snapshot.
+    #[test]
+    fn drift_leaves_the_first_observation_snapshot_unchanged() {
+        let store = FuzzyStore::new();
+        let id = identify(&store, &rich_probe(), 1_000).visitor_id.unwrap();
+        let snapshot = store.record(&id).unwrap().first_observation;
+        assert_eq!(snapshot, store.record(&id).unwrap().components);
+
+        let mut drifted = rich_probe();
+        drifted.canvas = Some("beef".into());
+        assert_eq!(identify(&store, &drifted, 2_000).decision, Decision::Match);
+        let after = store.record(&id).unwrap();
+        assert_ne!(after.components, snapshot);
+        assert_eq!(after.first_observation, snapshot);
+    }
+
+    /// Two first sightings of one device whose read phases both run before
+    /// either write phase resolve to ONE visitor: the second write sees the
+    /// state moved, re-decides, and folds in as a match.
+    #[test]
+    fn interleaved_identical_first_sightings_yield_one_visitor() {
+        let store = FuzzyStore::new();
+        let probe = full_probe();
+        let first_read = store.identify_read(&probe);
+        let second_read = store.identify_read(&probe);
+        assert_eq!(first_read.outcome.decision, Decision::NewDevice);
+        assert_eq!(second_read.outcome.decision, Decision::NewDevice);
+
+        let first = store.identify_write(&ctx(&probe, 1_000), first_read);
+        let second = store.identify_write(&ctx(&probe, 1_001), second_read);
+        assert_eq!(first.decision, Decision::NewDevice);
+        assert_eq!(second.decision, Decision::Match);
+        assert!(!second.is_new_device);
+        assert_eq!(second.visitor_id, first.visitor_id);
+        assert_eq!(store.read().records.len(), 1);
+    }
+
+    /// An erase landing between an identify's read and write phases never
+    /// resurrects the erased id: the write re-decides, the probe becomes a new
+    /// device under a different id, and the erased id is in no record or block.
+    #[test]
+    fn erase_between_phases_never_recreates_the_erased_id() {
+        let store = FuzzyStore::new();
+        let probe = full_probe();
+        let erased = identify(&store, &probe, 1_000).visitor_id.unwrap();
+
+        let pending = store.identify_read(&probe);
+        assert_eq!(pending.outcome.decision, Decision::Match);
+        assert!(store.erase(&erased));
+        let out = store.identify_write(&ctx(&probe, 2_000), pending);
+
+        assert_eq!(out.decision, Decision::NewDevice);
+        let minted = out.visitor_id.unwrap();
+        assert_ne!(minted, erased);
+        assert!(store.record(&erased).is_none());
+        assert!(!store.read().blocking.indexes(&erased));
+        assert!(store.read().tombstones.contains(&erased));
     }
 }

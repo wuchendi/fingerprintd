@@ -7,9 +7,9 @@
 //! reports the two headline metrics:
 //!
 //! - **stability rate** — of all same-device revisits, the fraction re-resolved
-//!   to that device's own `visitorId` (fuzzy-matching §10 稳定率).
+//!   to that device's own `visitor_id` (fuzzy-matching §10).
 //! - **collision rate** — of all observations, the fraction merged onto a
-//!   `visitorId` first minted by a *different* ground-truth device (碰撞率).
+//!   `visitor_id` first minted by a *different* ground-truth device (fuzzy-matching §10).
 //!
 //! The bundled [`Fixture::synthetic`] fixture is hand-authored to exercise the engine
 //! **directionally** — same-device visits drift only slightly (a browser
@@ -25,10 +25,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::{Components, FuzzyStore, IdentifyContext};
 use serde::Deserialize;
-use serde_json::Value;
-
-use super::FuzzyStore;
 
 /// A labelled evaluation fixture: observations grouped by ground-truth device
 /// (fuzzy-matching §10). Every observation under one [`DeviceGroup`] is the *same*
@@ -45,9 +43,9 @@ pub struct DeviceGroup {
     /// Stable ground-truth identifier for the physical device.
     #[serde(rename = "deviceId")]
     pub device_id: String,
-    /// The raw component objects observed across this device's visits, oldest
-    /// first. Each is fed to [`FuzzyStore::identify`] verbatim.
-    pub observations: Vec<Value>,
+    /// The components observed across this device's visits, oldest first.
+    /// Each is fed to [`FuzzyStore::identify`] verbatim.
+    pub observations: Vec<Components>,
 }
 
 /// Headline evaluation metrics over one fixture replay (fuzzy-matching §10).
@@ -60,11 +58,11 @@ pub struct EvalReport {
     /// Observations that were a device's *second or later* visit (the population
     /// the stability rate is measured over).
     pub revisits: usize,
-    /// Revisits correctly re-resolved to their device's own `visitorId`.
+    /// Revisits correctly re-resolved to their device's own `visitor_id`.
     pub stable_links: usize,
-    /// Observations merged onto a `visitorId` first minted by another device.
+    /// Observations merged onto a `visitor_id` first minted by another device.
     pub collisions: usize,
-    /// `visitorId`s minted across the replay (one per new device seen; more than
+    /// `visitor_id`s minted across the replay (one per new device seen; more than
     /// [`total_devices`] indicates fragmentation).
     ///
     /// [`total_devices`]: EvalReport::total_devices
@@ -72,7 +70,7 @@ pub struct EvalReport {
 }
 
 impl EvalReport {
-    /// Stability rate = stable revisits / revisits (fuzzy-matching §10 稳定率).
+    /// Stability rate = stable revisits / revisits (fuzzy-matching §10).
     ///
     /// Returns `1.0` when there are no revisits (nothing to re-link).
     #[allow(clippy::cast_precision_loss)] // fixture-sized counts; precision loss immaterial
@@ -83,7 +81,7 @@ impl EvalReport {
         self.stable_links as f64 / self.revisits as f64
     }
 
-    /// Collision rate = cross-device merges / observations (fuzzy-matching §10 碰撞率).
+    /// Collision rate = cross-device merges / observations (fuzzy-matching §10).
     #[allow(clippy::cast_precision_loss)] // fixture-sized counts; precision loss immaterial
     pub fn collision_rate(&self) -> f64 {
         if self.total_observations == 0 {
@@ -126,14 +124,14 @@ const SYNTHETIC_FIXTURE: &str = include_str!("../../fixtures/eval/synthetic.json
 /// stresses cross-device collisions rather than replaying one device to
 /// exhaustion in isolation.
 ///
-/// A `visitorId` is attributed to the ground-truth device of the observation
+/// A `visitor_id` is attributed to the ground-truth device of the observation
 /// that first minted it. Thereafter each observation is judged:
 /// - re-resolved to its own device's id → a correct link (stable if a revisit);
 /// - resolved to another device's id → a collision;
 /// - minted a fresh id on a revisit → a stability miss (device fragmented).
 pub fn evaluate(fixture: &Fixture) -> EvalReport {
     let store = FuzzyStore::new();
-    // `visitorId → the ground-truth device that first minted it`.
+    // `visitor_id → the ground-truth device that first minted it`.
     let mut owner: HashMap<String, String> = HashMap::new();
     // Ground-truth devices whose first observation has already been replayed.
     let mut seen_devices: HashSet<String> = HashSet::new();
@@ -149,8 +147,16 @@ pub fn evaluate(fixture: &Fixture) -> EvalReport {
 
     let mut now_ms = 1_000u64;
     for (device_id, components) in interleave(fixture) {
-        let outcome = store.identify(components, now_ms);
+        let outcome = store.identify(&IdentifyContext {
+            components,
+            now_ms,
+            client_ip: None,
+        });
         now_ms += 1_000;
+        // `identify` always resolves an id; an unset one cannot be attributed.
+        let Some(visitor_id) = outcome.visitor_id else {
+            continue;
+        };
         report.total_observations += 1;
 
         let is_revisit = !seen_devices.insert(device_id.clone());
@@ -158,10 +164,10 @@ pub fn evaluate(fixture: &Fixture) -> EvalReport {
             report.revisits += 1;
         }
 
-        match owner.get(&outcome.visitor_id) {
-            // A `visitorId` we have not attributed yet ⇒ freshly minted here.
+        match owner.get(&visitor_id) {
+            // A `visitor_id` we have not attributed yet ⇒ freshly minted here.
             None => {
-                owner.insert(outcome.visitor_id.clone(), device_id.clone());
+                owner.insert(visitor_id, device_id.clone());
                 report.minted_ids += 1;
                 // Minting a new id on a revisit means the device fragmented: it
                 // is a revisit that failed to re-link, so not counted stable.
@@ -184,7 +190,7 @@ pub fn evaluate(fixture: &Fixture) -> EvalReport {
 /// Interleave a fixture's observations round-robin across devices, oldest visit
 /// first: round 0 yields every device's first observation, round 1 their second,
 /// and so on. Returns `(deviceId, observation)` pairs.
-fn interleave(fixture: &Fixture) -> Vec<(&String, &Value)> {
+fn interleave(fixture: &Fixture) -> Vec<(&String, &Components)> {
     let max_visits = fixture
         .devices
         .iter()
@@ -244,7 +250,7 @@ mod tests {
         // device on this cleanly-separable synthetic set.
         assert_eq!(
             report.minted_ids, report.total_devices,
-            "each device should own exactly one visitorId: {report:?}",
+            "each device should own exactly one visitor_id: {report:?}",
         );
     }
 

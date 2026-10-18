@@ -21,11 +21,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 async-trait = "0.1"
 rand = "0.10"
 sha2 = "0.11"
-hmac = "0.13"
 hex = "0.4"
-
-# dev-only
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", default-features = false }
+tower-http = { version = "0.6", default-features = false, features = ["timeout"] }
 
 # === Deny-warnings policy lives in the manifest (inherited by every member) ===
 [workspace.lints.rust]

@@ -1,13 +1,22 @@
 //! Fixture-driven behaviour tests against REAL `CloakBrowser` captures.
 //!
 //! The JSON files under `tests/fixtures/cloakbrowser/` were produced by the
-//! red-team harness (`scripts/redteam/cloak/run.sh`): the actual client SDK
-//! collector (`FingerprintJS` + `BotD`, adapted to the server schema) run inside
-//! the `CloakBrowser` free binary (Chromium 146, Windows persona, several
-//! `--fingerprint` seeds) and inside stock Chromium 149 as the negative
-//! control. `stable_components` in each file is byte-for-byte what `/identify`
-//! would receive. These tests pin what the engine does with that material
-//! today — they document behaviour, they do not assert a desired end state.
+//! adversarial capture harness (`scripts/redteam/cloak/run.sh`): the actual client SDK
+//! collector (`FingerprintJS` + `BotD`) run inside the `CloakBrowser` free binary
+//! (Chromium 146, Windows persona, several `--fingerprint` seeds) and inside
+//! stock Chromium 149 as the negative control. These tests pin what the engine
+//! does with that material — they document behaviour, they do not assert a
+//! desired end state.
+//!
+//! Each capture's `components` is the raw collector output reduced to the closed
+//! schema with the SDK adapter's mapping (`hardwareConcurrency` → `cpu_cores`,
+//! `webGlBasics` → `webgl`, `screenResolution` → `screen`, …): only schema keys
+//! are kept, every other `FingerprintJS` key is dropped, `plugins` keeps the
+//! plugin names, and an object/array value for a category key would become its
+//! compact JSON with sorted object keys (no capture carries one). What survives
+//! here is `platform`, `timezone`, `audio`, `cpu_cores`, `device_memory`,
+//! `fonts`, and `plugins`. The claimed UA is the capture's top-level
+//! `user_agent`.
 
 // Test-only fixture loading: a missing or malformed capture must abort loudly.
 #![allow(clippy::expect_used, clippy::panic)]
@@ -15,17 +24,24 @@
 use std::{fs, path::PathBuf};
 
 use fingerprintd::{
-    fuzzy::{Decision, FuzzyStore},
+    fuzzy::{Components, Decision, FuzzyStore, IdentifyContext, MatchOutcome},
     signals::{PersonaCoherence, persona_coherence},
 };
 use serde::Deserialize;
-use serde_json::Value;
+
+fn identify(store: &FuzzyStore, components: &Components, now_ms: u64) -> MatchOutcome {
+    store.identify(&IdentifyContext {
+        components,
+        now_ms,
+        client_ip: None,
+    })
+}
 
 #[derive(Deserialize)]
 struct Capture {
     meta: Meta,
     user_agent: String,
-    stable_components: Value,
+    components: Components,
 }
 
 #[derive(Deserialize)]
@@ -62,33 +78,31 @@ fn by_label<'a>(all: &'a [Capture], label: &str) -> &'a Capture {
 
 /// The binary's fingerprint is a deterministic function of the seed.
 /// Two independent launches with `--fingerprint=12345` hand the SDK identical
-/// `stable_components`, and the engine recalls the same device at full match.
+/// `components`, and the engine recalls the same device at full match.
 #[test]
 fn same_seed_captures_are_identical_and_match_the_same_device() {
     let all = fixtures();
     let a = by_label(&all, "cloak-windows-seed-12345-a");
     let b = by_label(&all, "cloak-windows-seed-12345-b");
-    assert_eq!(a.stable_components, b.stable_components);
+    assert_eq!(a.components, b.components);
 
     let store = FuzzyStore::new();
-    let first = store.identify(&a.stable_components, 1_000);
-    let second = store.identify(&b.stable_components, 2_000);
+    let first = identify(&store, &a.components, 1_000);
+    let second = identify(&store, &b.components, 2_000);
     assert!(first.is_new_device);
     assert_eq!(second.decision, Decision::Match);
     assert!(!second.is_new_device);
     assert_eq!(second.visitor_id, first.visitor_id);
 }
 
-/// These captures predate the adapter's canonicalization of object/array
-/// components: they were taken when it still dropped `FingerprintJS's`
-/// `canvas` / `webGlBasics` / `screenResolution`, and the Linux container
-/// exposes none of the fonts `FingerprintJS` probes. What reaches the engine
-/// from a re-seeded `CloakBrowser` launch in this old shape therefore differs
-/// from the previous seed in `audio` ONLY. This test pins how the engine treats
-/// that worst case: `audio` is a high-stability blocking key, so each re-seeded
-/// launch misses recall and is minted as a brand-new device — the fresh-seed
-/// farm footprint the velocity signal counts. Current SDK output (canvas /
-/// webgl included) is covered by `packages/client/tests/integration/fjs-contract.test.ts`.
+/// These captures carry no `canvas` / `webgl` / `screen` (the collector that
+/// produced them did not emit them), and the Linux container exposes none of
+/// the fonts `FingerprintJS` probes. What reaches the engine from a re-seeded
+/// `CloakBrowser` launch therefore differs from the previous seed in `audio`
+/// ONLY. This test pins how the engine treats that worst case: `audio` is a
+/// high-stability blocking key, so each re-seeded launch misses recall and is
+/// minted as a brand-new device — the fresh-seed farm footprint the velocity
+/// signal counts.
 #[test]
 fn distinct_seeds_differ_only_in_audio_and_each_mint_a_new_device() {
     let all = fixtures();
@@ -99,9 +113,12 @@ fn distinct_seeds_differ_only_in_audio_and_each_mint_a_new_device() {
         .collect();
     assert!(seeds.len() >= 3, "need several distinct seeds");
 
-    let base = seeds[0].stable_components.as_object().expect("object");
+    let base = serde_json::to_value(&seeds[0].components).expect("serialize");
+    let base = base.as_object().expect("object");
     for other in &seeds[1..] {
-        let obj = other.stable_components.as_object().expect("object");
+        let obj = serde_json::to_value(&other.components).expect("serialize");
+        let obj = obj.as_object().expect("object");
+        assert_eq!(base.len(), obj.len(), "{}", other.meta.label);
         let differing: Vec<&String> = base
             .iter()
             .filter(|(k, v)| obj.get(*k) != Some(v))
@@ -119,7 +136,7 @@ fn distinct_seeds_differ_only_in_audio_and_each_mint_a_new_device() {
     let store = FuzzyStore::new();
     let mut ids = Vec::new();
     for (i, capture) in seeds.iter().enumerate() {
-        let outcome = store.identify(&capture.stable_components, 1_000 + i as u64);
+        let outcome = identify(&store, &capture.components, 1_000 + i as u64);
         assert_eq!(
             outcome.decision,
             Decision::NewDevice,
@@ -141,10 +158,10 @@ fn stock_controls_never_link_to_a_cloak_capture() {
     let store = FuzzyStore::new();
     let mut cloak_ids = Vec::new();
     for c in all.iter().filter(|c| c.meta.mode == "cloak") {
-        cloak_ids.push(store.identify(&c.stable_components, 1_000).visitor_id);
+        cloak_ids.push(identify(&store, &c.components, 1_000).visitor_id);
     }
     for c in all.iter().filter(|c| c.meta.mode == "stock") {
-        let outcome = store.identify(&c.stable_components, 5_000);
+        let outcome = identify(&store, &c.components, 5_000);
         assert!(
             !cloak_ids.contains(&outcome.visitor_id),
             "{} linked to a cloak device",
@@ -162,7 +179,7 @@ fn stock_controls_never_link_to_a_cloak_capture() {
 fn windows_persona_captures_are_persona_mismatches_and_stock_linux_is_unknown() {
     let all = fixtures();
     for c in all.iter().filter(|c| c.meta.mode == "cloak") {
-        let fonts = c.stable_components.get("fonts");
+        let fonts = c.components.fonts.as_deref();
         let expected = if c.user_agent.contains("Windows NT") {
             PersonaCoherence::Mismatch
         } else {
@@ -178,7 +195,7 @@ fn windows_persona_captures_are_persona_mismatches_and_stock_linux_is_unknown() 
     }
     for c in all.iter().filter(|c| c.meta.mode == "stock") {
         assert_eq!(
-            persona_coherence(Some(&c.user_agent), c.stable_components.get("fonts")),
+            persona_coherence(Some(&c.user_agent), c.components.fonts.as_deref()),
             PersonaCoherence::Unknown,
             "{}",
             c.meta.label

@@ -1,0 +1,258 @@
+{
+  "description": "Native parity vectors for the fp-core engine, in the closed component schema. Given the fixture's salt secret, every step must resolve the same symbolic visitor (minted ids are random), decision, is_new_device, collision_risk, template_jump, and confidence (within confidence_tolerance). Driven through the native identify path by crates/fingerprintd/tests/parity.rs and through the stored-form edge path (recall by blocking key, score, persist the returned template) by crates/fp-wasm. Regenerate with `cargo test -p fingerprintd-server --test parity -- --nocapture` if the engine changes (it prints the outcomes it computed).",
+  "salt_secret": "fp-parity-vector-secret",
+  "confidence_tolerance": 1e-12,
+  "components": {
+    "A": {
+      "webgl": "ANGLE (Intel)",
+      "platform": "Linux x86_64",
+      "timezone": "Asia/Shanghai",
+      "audio": "124.04",
+      "cpu_cores": 8,
+      "device_memory": 8,
+      "fonts": [
+        "Arial",
+        "Helvetica",
+        "Courier",
+        "Times",
+        "Verdana"
+      ]
+    },
+    "A_drift": {
+      "webgl": "ANGLE (Intel)",
+      "platform": "Linux x86_64",
+      "timezone": "Asia/Shanghai",
+      "audio": "124.04",
+      "cpu_cores": 8,
+      "device_memory": 8,
+      "fonts": [
+        "Arial",
+        "Helvetica",
+        "Courier",
+        "Times",
+        "Segoe"
+      ]
+    },
+    "B": {
+      "webgl": "Apple GPU",
+      "platform": "iPhone",
+      "timezone": "America/New_York",
+      "audio": "35.7",
+      "cpu_cores": 6,
+      "device_memory": 4,
+      "fonts": [
+        "SF Pro",
+        "Menlo",
+        "Georgia",
+        "Palatino"
+      ]
+    },
+    "review": {
+      "webgl": "ANGLE (Intel)",
+      "platform": "Linux x86_64",
+      "timezone": "Asia/Shanghai",
+      "audio": "124.04",
+      "cpu_cores": 8
+    },
+    "R": {
+      "webgl": "ANGLE (Intel)",
+      "platform": "Linux x86_64",
+      "timezone": "Asia/Shanghai",
+      "languages": "en-US",
+      "audio": "124.04",
+      "cpu_cores": 8,
+      "device_memory": 8,
+      "fonts": [
+        "Arial",
+        "Helvetica",
+        "Courier",
+        "Times",
+        "Verdana"
+      ],
+      "canvas": "c0ffee",
+      "screen": "1920x1080",
+      "webgl_extensions": "ext-hash-1",
+      "user_agent_data": "uad-hash-1",
+      "font_preferences": "fp-hash-1",
+      "screen_frame": "sf-hash-1",
+      "math": "math-hash-1",
+      "touch_support": "ts-hash-1",
+      "dom_blockers": "db-hash-1",
+      "plugins": [
+        "PDF Viewer",
+        "Chrome PDF Viewer"
+      ]
+    },
+    "R_jump": {
+      "webgl": "Mali-G78",
+      "platform": "Linux armv8",
+      "timezone": "Asia/Shanghai",
+      "languages": "de-DE",
+      "audio": "124.04",
+      "cpu_cores": 8,
+      "device_memory": 8,
+      "fonts": [
+        "Arial",
+        "Helvetica",
+        "Courier",
+        "Times",
+        "Verdana"
+      ],
+      "canvas": "c0ffee",
+      "screen": "1920x1080",
+      "webgl_extensions": "ext-hash-1",
+      "user_agent_data": "uad-hash-1",
+      "font_preferences": "fp-hash-1",
+      "screen_frame": "sf-hash-1",
+      "math": "math-hash-1",
+      "touch_support": "ts-hash-1",
+      "dom_blockers": "db-hash-1",
+      "plugins": [
+        "PDF Viewer",
+        "Chrome PDF Viewer"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "name": "first sight is a new device",
+      "note": "A cold store mints a fresh random visitor_id; confidence is frequency-independent (no candidate scored).",
+      "steps": [
+        {
+          "input": "A",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "one font swap stays the same device",
+      "note": "Recall is the whole population (one device), so the global and block frequency tables coincide and the Fellegi-Sunter confidence is exact across stacks.",
+      "steps": [
+        {
+          "input": "A",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        },
+        {
+          "input": "A_drift",
+          "expect": {
+            "decision": "match",
+            "is_new_device": false,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.7964829739174872,
+            "template_jump": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a disjoint device is a separate new device",
+      "note": "B shares no blocking key with A, so recall is empty and B mints its own id.",
+      "steps": [
+        {
+          "input": "A",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        },
+        {
+          "input": "B",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "B",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "an ambiguous partial probe is suspected, not confirmed",
+      "note": "Only the stable K1 subset plus cpu_cores agree, scoring in the [T_lo, T_hi) review band: the suspect id is returned but its template is NOT drifted (anti-poisoning). Single-device population keeps confidence exact.",
+      "steps": [
+        {
+          "input": "A",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        },
+        {
+          "input": "review",
+          "expect": {
+            "decision": "review",
+            "is_new_device": false,
+            "visitor": "A",
+            "collision_risk": false,
+            "confidence": 0.31343546831817864,
+            "template_jump": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a template jump is suspected, not confirmed",
+      "note": "R_jump scores past T_hi against R but changes three high-stability components, so the match is downgraded to review with template_jump set; the template is not drifted, so R itself still matches afterwards.",
+      "steps": [
+        {
+          "input": "R",
+          "expect": {
+            "decision": "new_device",
+            "is_new_device": true,
+            "visitor": "R",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": false
+          }
+        },
+        {
+          "input": "R_jump",
+          "expect": {
+            "decision": "review",
+            "is_new_device": false,
+            "visitor": "R",
+            "collision_risk": false,
+            "confidence": 0.5,
+            "template_jump": true
+          }
+        },
+        {
+          "input": "R",
+          "expect": {
+            "decision": "match",
+            "is_new_device": false,
+            "visitor": "R",
+            "collision_risk": false,
+            "confidence": 0.9958140785343741,
+            "template_jump": false
+          }
+        }
+      ]
+    }
+  ]
+}
