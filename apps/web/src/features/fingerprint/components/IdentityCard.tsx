@@ -77,10 +77,19 @@ export function IdentityCard({
 
         <div className="space-y-1.5">
           <span className="text-[0.7rem] uppercase tracking-[0.14em] text-muted-foreground">
-            visitorId
+            visitor_id
           </span>
           <p className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-sm">
-            {identity.visitorId}
+            {identity.visitor_id}
+          </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <span className="text-[0.7rem] uppercase tracking-[0.14em] text-muted-foreground">
+            request_id
+          </span>
+          <p className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-sm">
+            {identity.request_id}
           </p>
         </div>
 
@@ -94,7 +103,7 @@ export function IdentityCard({
             </p>
             <p className="text-xs text-muted-foreground">
               {t(
-                'FingerprintJS computes this hash in the browser. The SDK discards it — the server judges identity from raw evidence instead.',
+                'FingerprintJS computes this hash in the browser. The SDK discards it — the server judges identity from raw evidence and returns visitor_id.',
               )}
             </p>
           </div>
@@ -126,7 +135,7 @@ export function IdentityCard({
             label={t('Client integrity')}
             value={
               <span className="font-mono">
-                {identity.signals.client_integrity ?? 'unavailable'}
+                {identity.signals.client_integrity}
               </span>
             }
             tone={
@@ -139,7 +148,7 @@ export function IdentityCard({
             label={t('Persona coherence')}
             value={
               <span className="font-mono">
-                {identity.signals.persona_coherence ?? 'unknown'}
+                {identity.signals.persona_coherence}
               </span>
             }
             tone={
@@ -147,6 +156,33 @@ export function IdentityCard({
                 ? 'default'
                 : 'muted'
             }
+          />
+          <Signal
+            label={t('New-device velocity')}
+            value={
+              <span className="font-mono">
+                {identity.signals.new_device_velocity}
+              </span>
+            }
+            tone={
+              identity.signals.new_device_velocity === 'low'
+                ? 'muted'
+                : 'default'
+            }
+          />
+          <Signal
+            label={t('Automation')}
+            value={
+              <span className="font-mono">{identity.signals.automation}</span>
+            }
+            tone={
+              identity.signals.automation === 'detected' ? 'default' : 'muted'
+            }
+          />
+          <Signal
+            label={t('Template jump')}
+            value={identity.signals.template_jump ? t('Yes') : t('No')}
+            tone={identity.signals.template_jump ? 'default' : 'muted'}
           />
         </div>
       </CardContent>

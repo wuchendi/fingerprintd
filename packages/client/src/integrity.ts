@@ -14,16 +14,15 @@
  *    (diff counts, distinct values, actual vs expected), never a verdict.
  *  - {@link evaluateIntegrity} — pure function of that material.
  *
- * The result rides as a TOP-LEVEL `integrity` field of the identify request —
- * deliberately outside `stable_components`, so it can never enter the
- * `visitorId` match. It is a risk signal for the server to surface, not identity
+ * The result rides as the TOP-LEVEL `integrity` field of the identify request —
+ * deliberately outside `components`, so it can never enter the visitor match. It is a risk signal for the server to surface, not identity
  * material. A probe whose API is missing or throws reports `unavailable`, which
  * the server treats as neutral. Legitimate privacy tooling (Brave farbling,
  * canvas blockers) trips the same probes — downstream must treat `noise` as a
  * band, not proof of automation.
  *
  * Depth, not a lock: this runs in page JavaScript and can be hooked like any
- * other client code (same caveat as the WASM nonce probe).
+ * other client code.
  */
 
 /** Verdict of one probe. */

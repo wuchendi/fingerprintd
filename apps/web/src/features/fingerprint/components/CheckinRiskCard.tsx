@@ -70,10 +70,10 @@ export function CheckinRiskCard({ checkin }: { checkin: AssessResponse }) {
 
         <div className="space-y-1.5">
           <span className="text-[0.7rem] uppercase tracking-[0.14em] text-muted-foreground">
-            visitorId
+            visitor_id
           </span>
           <p className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-sm">
-            {checkin.visitorId}
+            {checkin.visitor_id}
           </p>
         </div>
 

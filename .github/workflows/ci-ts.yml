@@ -1,15 +1,13 @@
 name: CI (ts)
 
 # Runs only when the TypeScript workspace (packages/apps) or its shared config
-# changes. The TS suites exercise the WASM built from `crates/fp-wasm` — that
-# artifact is NO LONGER committed (it is a build output), so the `wasm` job below
-# rebuilds it from source and publishes it as an artifact the other jobs download
-# into `apps/edge/wasm` / `packages/client/wasm` BEFORE `bun install`. Install
-# must run with the WASM present because the repo-root `prepare` script builds the
-# `@cdlab/fingerprintd` SDK, which imports the vendored glue. A Rust-source
-# change now flows through here (the `wasm` job rebuilds), so there is no separate
-# committed-vs-source drift guard. The `push` and `pull_request` triggers share
-# one path list via a YAML anchor.
+# changes. The edge Worker bundles the WASM built from `crates/fp-wasm`, a build
+# output that is not committed: the `wasm` job rebuilds it from source and
+# publishes it as an artifact the edge job downloads into `apps/edge/wasm`
+# BEFORE `bun install`. A Rust-source change flows through here (the `wasm` job
+# rebuilds), so there is no separate committed-vs-source drift guard. The SDK
+# (packages/client) is pure TypeScript and needs no WASM. The `push` and
+# `pull_request` triggers share one path list via a YAML anchor.
 on:
   push:
     branches: [main]
@@ -25,12 +23,9 @@ on:
     paths: *ts-paths
 
 jobs:
-  # Build the vendored WASM once from source and publish it as an artifact the
-  # TS jobs download. Pinned toolchain + shared TEST probe key mirror the deploy
-  # workflows so the build is predictable and the probe fixtures assert against a
-  # known vector (fp-wasm `matches_server_probe_vector`, client `probe.test.ts` →
-  # ad83144894f917b94072c2f7b3246af66d3bc5a450562ccf3671ed64d33137d0). Both
-  # consumers (edge/client) use the SAME build, so one artifact serves all.
+  # Build the edge Worker's WASM once from source and publish it as an artifact
+  # the edge job downloads. The pinned toolchain mirrors the deploy workflows so
+  # the build is predictable.
   wasm:
     name: wasm (build vendored artifact from source)
     runs-on: ubuntu-latest
@@ -50,11 +45,9 @@ jobs:
         with:
           tool: wasm-pack@0.15.0
 
+      # Absolute --out-dir — wasm-pack resolves `--out-dir` relative to the
+      # CRATE dir.
       - name: Build vendored WASM from source
-        env:
-          # The shared TEST probe key the fixtures assert. Absolute --out-dir —
-          # wasm-pack resolves `--out-dir` relative to the CRATE dir.
-          FP_PROBE_KEY: test-probe-secret
         run: wasm-pack build --target web --out-dir "$GITHUB_WORKSPACE/wasm-dist" crates/fp-wasm
 
       - name: Upload WASM artifact
@@ -66,21 +59,12 @@ jobs:
 
   web:
     name: web (biome + typecheck + test + build)
-    needs: wasm
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: packages/client
     steps:
       - uses: actions/checkout@v5
-
-      # The SDK build/tests (and the root `prepare` on install) import the
-      # vendored glue — place it before `bun install`.
-      - name: Download vendored WASM (packages/client/wasm)
-        uses: actions/download-artifact@v4
-        with:
-          name: vendored-wasm
-          path: packages/client/wasm
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -102,18 +86,9 @@ jobs:
 
   web-app:
     name: "web-app (apps/web: biome + typecheck + build)"
-    needs: wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      # apps/web consumes the built SDK, which imports the vendored glue — place
-      # it before `bun install` (the root `prepare` builds the SDK on install).
-      - name: Download vendored WASM (packages/client/wasm)
-        uses: actions/download-artifact@v4
-        with:
-          name: vendored-wasm
-          path: packages/client/wasm
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -144,20 +119,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The edge tests read `apps/edge/wasm` from disk and wrangler bundles it;
-      # the root `prepare` (SDK build on install) needs `packages/client/wasm`.
-      # Both are the same build — download the artifact into each.
+      # The edge tests read `apps/edge/wasm` from disk and wrangler bundles it —
+      # place it before `bun install` so the root `prepare` skips rebuilding it.
       - name: Download vendored WASM (apps/edge/wasm)
         uses: actions/download-artifact@v4
         with:
           name: vendored-wasm
           path: apps/edge/wasm
-
-      - name: Download vendored WASM (packages/client/wasm)
-        uses: actions/download-artifact@v4
-        with:
-          name: vendored-wasm
-          path: packages/client/wasm
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -187,18 +155,9 @@ jobs:
 
   js-sca:
     name: "js-sca (bun audit — workspace supply-chain)"
-    needs: wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      # `bun install` runs the root `prepare` (SDK build), which imports the
-      # vendored glue — place it before install even though this job only audits.
-      - name: Download vendored WASM (packages/client/wasm)
-        uses: actions/download-artifact@v4
-        with:
-          name: vendored-wasm
-          path: packages/client/wasm
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2

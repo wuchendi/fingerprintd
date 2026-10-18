@@ -1,10 +1,11 @@
 name: Release (npm + crates.io)
 
-# Publishes the browser SDK (`@cdlab/fingerprintd`, packages/client) to npm and
-# the Rust compute crate (`fingerprintd`, crates/fp-core) to crates.io.
+# Publishes the pure-TypeScript browser SDK (`@cdlab/fingerprintd`,
+# packages/client) to npm and the Rust compute crate (`fingerprintd`,
+# crates/fp-core) to crates.io.
 # Not published: `fingerprintd-server` (a deployable, not a library) and
-# `fp-wasm` (a wasm-pack artifact with a build-time probe key, consumed as a
-# vendored module, not as a Rust dependency).
+# `fp-wasm` (a wasm-pack artifact vendored into the edge Worker, not a Rust
+# dependency).
 #
 # Trigger: push a tag `vX.Y.Z` whose version equals BOTH manifests
 # (packages/client/package.json and the Cargo workspace version), or run it
@@ -18,10 +19,6 @@ name: Release (npm + crates.io)
 # trusted publishing: configure this workflow file as the trusted publisher on
 # npmjs.com (package settings) and crates.io (crate settings), then delete the
 # secrets — each publish step falls back to OIDC when its token is absent.
-#
-# The npm artifact ships the DEV-keyed probe WASM (scripts/build-wasm.sh); a
-# deployment that enforces the probe rebuilds the WASM with its own key and
-# passes it to `initProbe()` — see packages/client/README.md.
 #
 # Once both registries accept the version, a GitHub Release is created for the
 # tag with auto-generated notes (job `github-release`, contents: write).
@@ -75,24 +72,6 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
-
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install wasm-pack
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
-
-      # Dev-keyed build (same as CI) — MUST run before `bun install`, whose root
-      # `prepare` builds the SDK from the vendored glue.
-      - name: Build SDK WASM
-        run: bash scripts/build-wasm.sh
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

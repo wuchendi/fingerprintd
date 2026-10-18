@@ -20,7 +20,7 @@ export function Hero() {
         </h1>
         <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground md:text-base">
           {t(
-            'Point the collect-only client at a fingerprintd server. It answers a nonce challenge, gathers stable device signals in WASM, and returns a signed match / review / new-device call.',
+            'Point the collect-only client at a fingerprintd server. It collects device components, sends them with a one-time nonce and a timestamp, and the server returns a match / review / new-device call with a request_id your backend looks up.',
           )}
         </p>
       </div>

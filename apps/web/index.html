@@ -17,13 +17,13 @@
     <title>fingerprintd — challenge / identify playground</title>
     <meta
       name="description"
-      content="Browser playground for the fingerprintd anti-fraud engine. Point the collect-only client at a server, run the nonce challenge → collect → identify flow, and inspect the visitorId, confidence, match / review / new-device verdict, and collected evidence."
+      content="Browser playground for the fingerprintd anti-fraud engine. Point the collect-only client at a server, run the nonce challenge → collect → identify flow, and inspect the visitor_id, request_id, confidence, match / review / new-device verdict, and collected evidence."
     />
     <meta name="application-name" content="fingerprintd" />
     <meta name="author" content="wudi" />
     <meta name="creator" content="wudi" />
     <meta name="publisher" content="wudi" />
-    <meta name="keywords" content="fingerprintd, device fingerprinting, browser fingerprint, anti-fraud, bot detection, visitor identification, challenge-response, WebAssembly, HMAC probe, playground" />
+    <meta name="keywords" content="fingerprintd, device fingerprinting, browser fingerprint, anti-fraud, bot detection, visitor identification, challenge-response, playground" />
     <meta name="category" content="technology" />
     <meta name="referrer" content="no-referrer-when-downgrade" />
     <link rel="author" href="https://github.com/WuChenDi" />
@@ -46,7 +46,7 @@
     <meta property="og:title" content="fingerprintd — challenge / identify playground" />
     <meta
       property="og:description"
-      content="Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and read the visitorId, confidence, verdict, and collected evidence."
+      content="Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and read the visitor_id, request_id, confidence, verdict, and collected evidence."
     />
     <meta property="og:url" content="https://fingerprintd.pages.dev/" />
     <meta property="og:image" content="https://cdn.jsdelivr.net/gh/cdLab996/picture-lib/wudi/fingerprintd/og-image.png" />
@@ -62,7 +62,7 @@
     <meta name="twitter:title" content="fingerprintd — challenge / identify playground" />
     <meta
       name="twitter:description"
-      content="Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and read the visitorId, confidence, verdict, and collected evidence."
+      content="Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and read the visitor_id, request_id, confidence, verdict, and collected evidence."
     />
     <meta name="twitter:image" content="https://cdn.jsdelivr.net/gh/cdLab996/picture-lib/wudi/fingerprintd/og-image.png" />
     <meta name="twitter:image:alt" content="fingerprintd — challenge / identify playground" />
@@ -96,10 +96,10 @@
             "@id": "https://fingerprintd.pages.dev/#webapp",
             "name": "fingerprintd — challenge / identify playground",
             "url": "https://fingerprintd.pages.dev/",
-            "description": "Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and inspect the visitorId, confidence, match / review / new-device verdict, network signals, and the collected evidence.",
+            "description": "Point the collect-only client at a fingerprintd server, run the nonce challenge → collect → identify flow, and inspect the visitor_id, request_id, confidence, match / review / new-device verdict, risk signals, and the collected evidence.",
             "applicationCategory": "SecurityApplication",
             "operatingSystem": "Any (web browser)",
-            "browserRequirements": "Requires a modern browser with WebAssembly support.",
+            "browserRequirements": "Requires a modern browser.",
             "image": "https://cdn.jsdelivr.net/gh/cdLab996/picture-lib/wudi/fingerprintd/og-image.png",
             "inLanguage": ["en", "zh"],
             "isAccessibleForFree": true,
@@ -109,10 +109,10 @@
             "publisher": { "@id": "https://fingerprintd.pages.dev/#person" },
             "featureList": [
               "Nonce challenge / identify flow against any fingerprintd server",
-              "Stable-component collection with an HMAC probe computed in WebAssembly",
+              "Closed-schema component collection sent with a one-time nonce and timestamp",
               "Visitor identification with match / review / new-device verdict and confidence",
-              "Response-signature (HMAC-SHA256) verification",
-              "Collected-evidence inspector for stable components, probe, and timestamp"
+              "request_id with copyable server-side check-in and event lookup snippets",
+              "Collected-evidence inspector for components, user agent, BotD verdict, timestamp, and integrity probes"
             ]
           }
         ]

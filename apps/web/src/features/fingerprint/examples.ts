@@ -2,10 +2,10 @@ import type { AssessResponse } from './api'
 
 /**
  * Representative `POST /checkin/assess` outcomes across the three decision bands.
- * A single live run only ever shows one outcome (and never the farming case,
- * which needs a real device farm), so these canned examples let the playground
- * demonstrate the full anti-farming range offline. The reason `code`s mirror the
- * ones the edge risk engine actually emits.
+ * The assessment is a server-to-server call the browser never makes (and the
+ * farming case needs a real device farm), so these canned examples let the
+ * playground demonstrate the full anti-farming range offline. The reason
+ * `code`s mirror the ones the edge risk engine emits.
  */
 export interface CheckinExample {
   /** i18n key for the scenario caption shown above the card. */
@@ -21,7 +21,7 @@ export const checkinExamples: readonly CheckinExample[] = [
       verdict: 'human',
       risk: 0.05,
       reasons: [],
-      visitorId: 'vis-1a2b3c4d-returning',
+      visitor_id: 'vis-1a2b3c4d-returning',
     },
   },
   {
@@ -36,7 +36,7 @@ export const checkinExamples: readonly CheckinExample[] = [
           detail: 'Account shows a high rate of never-before-seen devices',
         },
       ],
-      visitorId: 'vis-7c8d9e0f-churn',
+      visitor_id: 'vis-7c8d9e0f-churn',
     },
   },
   {
@@ -59,7 +59,7 @@ export const checkinExamples: readonly CheckinExample[] = [
           detail: 'Account shows a high rate of never-before-seen devices',
         },
       ],
-      visitorId: 'vis-e5f6a7b8-farm',
+      visitor_id: 'vis-e5f6a7b8-farm',
     },
   },
 ]

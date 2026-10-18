@@ -1,25 +1,25 @@
 /**
- * FULL collector assembly. Proves `createCollector` composes the stable
- * half + probe + `ts` + `integrity` into ONE payload and that `run()` forwards
- * every field to `/identify`, with `stable_components`, `probe` and `integrity`
- * kept SEPARATE.
+ * FULL collector assembly. Proves `createCollector` composes the stable half
+ * and the integrity probes into ONE payload and that `run()` forwards every
+ * field to `/identify` as a Contract v1 top-level key, with `components` and
+ * `integrity` kept separate.
  *
  * There is no headless browser here, so every backend is injected with a
- * deterministic fake — this exercises the WIRING, not real fingerprint values.
- * A final case uses the real vendored WASM to prove the probe flows end-to-end.
+ * deterministic fake — this exercises the wiring, not real fingerprint values.
  */
 
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createCollector } from '../../src/collector'
 import type { BotdDetector, FingerprintAgent } from '../../src/fingerprint'
 import { run } from '../../src/index'
 import type { Integrity } from '../../src/integrity'
-import { initProbe } from '../../src/probe'
-import type { ChallengeResponse } from '../../src/types'
 import type { RecordedRequest } from '../helpers'
-import { mockFetch, sampleIdentify } from '../helpers'
+import {
+  IDENTIFY_REQUEST_KEYS,
+  mockFetch,
+  sampleChallenge,
+  sampleIdentify,
+} from '../helpers'
 
 function fakeFingerprint(
   components: Record<string, unknown>,
@@ -35,31 +35,7 @@ function fakeBotd(): () => Promise<BotdDetector> {
     Promise.resolve({
       collect: () => Promise.resolve(undefined),
       detect: () => ({ bot: false }),
-      getComponents: () => ({ webdriver: false }),
     })
-}
-
-/** A challenge that advertises the probe transform (server has a probe key). */
-function challengeWithVerify(): ChallengeResponse {
-  return {
-    nonce: 'nonce-abc',
-    expires_in: 30,
-    collect: {
-      stable: ['userAgent'],
-      challenge: {
-        seed: 'nonce-abc',
-        targets: ['canvas', 'audio'],
-        verify: { alg: 'HMAC-SHA256', input: 'nonce', encoding: 'hex' },
-      },
-    },
-  }
-}
-
-/** Same challenge but WITHOUT a probe transform (server has no probe key). */
-function challengeNoVerify(): ChallengeResponse {
-  const challenge = challengeWithVerify()
-  challenge.collect.challenge.verify = undefined
-  return challenge
 }
 
 const fakeIntegrity: Integrity = {
@@ -71,40 +47,32 @@ const fakeIntegrity: Integrity = {
 
 const deps = {
   fingerprint: {
-    loadFingerprint: fakeFingerprint({ ua: { value: 'Chrome/120' } }),
+    loadFingerprint: fakeFingerprint({ platform: { value: 'Win32' } }),
     loadBotd: fakeBotd(),
+    userAgent: () => 'Chrome/120',
   },
   integrity: () => Promise.resolve(fakeIntegrity),
 }
 
 describe('createCollector', () => {
-  it('assembles stable + probe + ts, kept separate', async () => {
-    const collector = createCollector({
-      ...deps,
-      probe: (nonce) => Promise.resolve(`probe:${nonce}`),
-      now: () => 1_700_000_000_123,
+  it('assembles components, user_agent, botd and integrity, kept separate', async () => {
+    const collected = await createCollector(deps)()
+
+    expect(collected).toEqual({
+      components: { platform: 'Win32' },
+      user_agent: 'Chrome/120',
+      botd: { bot: false },
+      integrity: fakeIntegrity,
     })
-
-    const collected = await collector(challengeWithVerify())
-
-    // Stable half: component adapted to the server schema (`ua` is an
-    // unmapped scalar, so the FJS `{ value }` wrapper is unwrapped), probe NOT
-    // mixed in.
-    expect(collected.stable_components.ua).toBe('Chrome/120')
-    expect(JSON.stringify(collected.stable_components)).not.toContain('probe:')
-    // Probe + ts + integrity stamped, separate from the matching input.
-    expect(collected.probe).toBe('probe:nonce-abc')
-    expect(collected.ts).toBe(1_700_000_000_123)
-    expect(collected.integrity).toEqual(fakeIntegrity)
-    expect(JSON.stringify(collected.stable_components)).not.toContain('noise')
   })
 
   it('reports every probe unavailable where the browser APIs are missing', async () => {
     // jsdom has no 2d/webgl canvas, no OfflineAudioContext and no layout, so
     // the DEFAULT integrity backend must degrade to `unavailable` (neutral
     // server-side) rather than throw or report `noise`.
-    const collector = createCollector({ fingerprint: deps.fingerprint })
-    const collected = await collector(challengeNoVerify())
+    const collected = await createCollector({
+      fingerprint: deps.fingerprint,
+    })()
     expect(collected.integrity).toEqual({
       canvas: 'unavailable',
       webgl: 'unavailable',
@@ -113,30 +81,11 @@ describe('createCollector', () => {
     })
   })
 
-  it('omits the probe when the challenge does not advertise verify', async () => {
-    let probeCalls = 0
-    const collector = createCollector({
-      ...deps,
-      probe: (nonce) => {
-        probeCalls++
-        return Promise.resolve(`probe:${nonce}`)
-      },
-    })
-
-    const collected = await collector(challengeNoVerify())
-
-    expect(collected.probe).toBeUndefined()
-    expect(probeCalls).toBe(0)
-    // The stable half + ts are still produced.
-    expect(collected.stable_components.ua).toBe('Chrome/120')
-    expect(collected.ts).toBeTypeOf('number')
-  })
-
-  it('run() forwards nonce, ts, probe, integrity and stable_components', async () => {
+  it('run() forwards every field as a Contract v1 top-level key', async () => {
     const recorded: RecordedRequest[] = []
     const fetch = mockFetch(
       {
-        challenge: { body: challengeWithVerify() },
+        challenge: { body: sampleChallenge() },
         identify: { body: sampleIdentify() },
       },
       recorded,
@@ -144,38 +93,18 @@ describe('createCollector', () => {
 
     await run({
       baseUrl: 'https://fp.example.com',
-      collect: createCollector({
-        ...deps,
-        probe: (nonce) => Promise.resolve(`probe:${nonce}`),
-        now: () => 1_700_000_000_123,
-      }),
+      collect: createCollector(deps),
       fetch,
     })
 
     const identifyRequest = recorded.find((r) => r.url.endsWith('/identify'))
     const sent = JSON.parse(identifyRequest?.body ?? '{}')
+    expect(Object.keys(sent).sort()).toEqual([...IDENTIFY_REQUEST_KEYS].sort())
     expect(sent.nonce).toBe('nonce-abc')
-    expect(sent.ts).toBe(1_700_000_000_123)
-    expect(sent.probe).toBe('probe:nonce-abc')
-    expect(sent.stable_components.ua).toBe('Chrome/120')
-    // Top-level, never nested under the matching input.
+    expect(sent.ts).toBeTypeOf('number')
+    expect(sent.components).toEqual({ platform: 'Win32' })
+    expect(sent.user_agent).toBe('Chrome/120')
+    expect(sent.botd).toEqual({ bot: false })
     expect(sent.integrity).toEqual(fakeIntegrity)
-    expect(sent.stable_components.integrity).toBeUndefined()
-  })
-
-  it('computes the real WASM probe end-to-end (vendored dev key)', async () => {
-    // Pre-init the WASM singleton with the vendored bytes so the default
-    // `wasmProbeFn` resolves without a browser URL fetch.
-    const wasmPath = resolve(process.cwd(), 'wasm/fp_wasm_bg.wasm')
-    await initProbe(new Uint8Array(readFileSync(wasmPath)))
-
-    // No `probe` injected -> the default WASM probe is used.
-    const collector = createCollector(deps)
-    const collected = await collector(challengeWithVerify())
-
-    // Vendored wasm is keyed with the vector secret -> matches the shared vector
-    // for the challenge nonce would only hold for "fixed-nonce-000"; here we just
-    // assert a well-formed hex digest bound to the nonce.
-    expect(collected.probe).toMatch(/^[0-9a-f]{64}$/)
   })
 })

@@ -1,29 +1,27 @@
 /**
  * CLIENT ↔ SERVER CONTRACT — real-browser FingerprintJS output through the
- * adapter into the real matcher (vendored `fp-wasm` `FpEngine`, the same
- * `crates/fp-core` the server runs).
+ * adapter into the closed component schema.
  *
  * Fixtures in `tests/fixtures/fjs-raw/` are UN-ADAPTED `components` captured
  * from stock Chromium / Firefox / WebKit by `scripts/redteam/cloak/run.sh`
- * (`SKIP_CLOAK=1`), not hand-written shapes: hand-written fixtures mirrored the
- * server's assumptions and let the adapter silently drop most components.
+ * (`SKIP_CLOAK=1`), not hand-written shapes, so the adapter is checked against
+ * what real browsers emit.
  *
- * Contract: every FJS component that carried a value reaches the matcher as a
- * STORED component (`FpEngine.stored_components` — the names the engine keeps
- * for matching after its own `classify()` / type checks).
+ * Contract: every schema key whose FingerprintJS source carried a value is
+ * emitted, with a value of its component kind, and nothing outside the schema
+ * is emitted.
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { adaptFingerprintComponents } from '../../src/adapter'
-import initWasm, { FpEngine } from '../../wasm/fp_wasm.js'
+import { COMPONENT_KEYS } from '../../src/schema'
+import { schemaViolations } from '../helpers'
 
-const WASM_PATH = resolve(process.cwd(), 'wasm/fp_wasm_bg.wasm')
 const FIXTURE_DIR = resolve(process.cwd(), 'tests/fixtures/fjs-raw')
 
 interface RawCapture {
-  meta: { label: string }
   raw_components: Record<string, { value?: unknown }>
 }
 
@@ -36,30 +34,39 @@ const fixtures = readdirSync(FIXTURE_DIR)
     ) as RawCapture,
   }))
 
+/** Schema key → its FingerprintJS source component. */
+const SOURCE: Record<string, string> = {
+  webgl: 'webGlBasics',
+  webgl_extensions: 'webGlExtensions',
+  platform: 'platform',
+  timezone: 'timezone',
+  languages: 'languages',
+  audio: 'audio',
+  canvas: 'canvas',
+  cpu_cores: 'hardwareConcurrency',
+  device_memory: 'deviceMemory',
+  screen: 'screenResolution',
+  fonts: 'fonts',
+  plugins: 'plugins',
+  font_preferences: 'fontPreferences',
+  screen_frame: 'screenFrame',
+  math: 'math',
+  touch_support: 'touchSupport',
+  dom_blockers: 'domBlockers',
+  user_agent_data: 'userAgentData',
+}
+
 /**
- * Components that carried a value but are dropped ON PURPOSE. Each entry is a
- * predicate over the raw value plus the reason; nothing else may be lost.
+ * Sources that carried a value but are dropped ON PURPOSE. Each entry is a
+ * predicate over the raw value; nothing else may be lost.
  */
-const EXCLUDED: Record<string, (value: unknown) => boolean> = {
+const DROPPED: Record<string, (value: unknown) => boolean> = {
   // FJS "no WebGL context" status codes (-1/-2), not a GPU identity.
   webGlBasics: (v) => typeof v === 'number',
   webGlExtensions: (v) => typeof v === 'number',
 }
 
-function stored(engine: FpEngine, components: Record<string, unknown>) {
-  return new Set<string>(
-    JSON.parse(engine.stored_components(JSON.stringify(components))),
-  )
-}
-
-describe('FingerprintJS → server contract (real-browser captures)', () => {
-  let engine: FpEngine
-
-  beforeAll(async () => {
-    await initWasm({ module_or_path: new Uint8Array(readFileSync(WASM_PATH)) })
-    engine = new FpEngine('contract-salt', 'k', 'k')
-  })
-
+describe('FingerprintJS → closed schema contract (real-browser captures)', () => {
   it('has one capture per stock engine', () => {
     expect(fixtures.map((f) => f.file).sort()).toEqual([
       'chromium-149.json',
@@ -68,40 +75,29 @@ describe('FingerprintJS → server contract (real-browser captures)', () => {
     ])
   })
 
+  it('maps every schema key to a source', () => {
+    expect(Object.keys(SOURCE)).toEqual([...COMPONENT_KEYS])
+  })
+
   for (const { file, capture } of fixtures) {
     describe(file, () => {
       const raw = capture.raw_components
       const adapted = adaptFingerprintComponents(raw)
 
-      it('stores every FJS component that carried a value', () => {
-        const kept = stored(engine, adapted)
-        const lost: string[] = []
-        for (const [name, entry] of Object.entries(raw)) {
-          if (entry.value === null || entry.value === undefined) continue
-          if (EXCLUDED[name]?.(entry.value)) continue
-          // The adapted fields this one FJS component produced.
-          const { [name]: _, ...without } = raw
-          const rest = adaptFingerprintComponents(without)
-          const derived = Object.keys(adapted).filter((k) => !(k in rest))
-          if (derived.length === 0) lost.push(`${name} (adapter dropped it)`)
-          for (const key of derived) {
-            if (!kept.has(key)) lost.push(`${name} → ${key} (not stored)`)
-          }
-        }
-        expect(lost).toEqual([])
+      it('emits only schema keys of the right kind', () => {
+        expect(schemaViolations(adapted, COMPONENT_KEYS)).toEqual([])
       })
 
-      it('emits the webgl+platform+timezone blocking key when WebGL is available', () => {
-        if (typeof raw.webGlBasics?.value !== 'object') return
-        const withWebgl = JSON.parse(
-          engine.blocking_keys(JSON.stringify(adapted)),
-        )
-        const { webgl: _, ...noWebgl } = adapted
-        const withoutWebgl = JSON.parse(
-          engine.blocking_keys(JSON.stringify(noWebgl)),
-        )
-        // K1 is the only key gated on webgl; K0 changes too but stays present.
-        expect(withWebgl.length).toBe(withoutWebgl.length + 1)
+      it('emits every schema key whose source carried a value', () => {
+        const lost: string[] = []
+        for (const key of COMPONENT_KEYS) {
+          const source = SOURCE[key] as string
+          const value = raw[source]?.value
+          if (value === null || value === undefined) continue
+          if (DROPPED[source]?.(value)) continue
+          if (!(key in adapted)) lost.push(`${source} → ${key}`)
+        }
+        expect(lost).toEqual([])
       })
     })
   }

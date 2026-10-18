@@ -1,22 +1,20 @@
 import { useTranslation } from 'react-i18next'
 import { CheckinExamples } from './components/CheckinExamples'
-import { CheckinRiskCard } from './components/CheckinRiskCard'
+import { CheckinFlowCard } from './components/CheckinFlowCard'
 import { EmptyPipeline } from './components/EmptyPipeline'
 import { EvidenceLanes } from './components/EvidenceLanes'
 import { Hero } from './components/Hero'
 import { IdentityCard } from './components/IdentityCard'
 import { RunPanel } from './components/RunPanel'
-import { SignatureCard } from './components/SignatureCard'
 import { useFingerprintStore } from './store'
 
 export function FingerprintPlayground() {
   const { t } = useTranslation()
+  const baseUrl = useFingerprintStore((s) => s.baseUrl)
+  const accountId = useFingerprintStore((s) => s.accountId)
   const status = useFingerprintStore((s) => s.status)
   const error = useFingerprintStore((s) => s.error)
   const result = useFingerprintStore((s) => s.result)
-  const checkinStatus = useFingerprintStore((s) => s.checkinStatus)
-  const checkinError = useFingerprintStore((s) => s.checkinError)
-  const checkin = useFingerprintStore((s) => s.checkin)
 
   return (
     <>
@@ -36,31 +34,21 @@ export function FingerprintPlayground() {
               original={result.original}
             />
           )}
-          {result && checkinStatus === 'running' && (
-            <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-              {t('Assessing check-in risk…')}
-            </div>
-          )}
-          {checkin && <CheckinRiskCard checkin={checkin} />}
-          {checkinStatus === 'error' && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-              <span className="font-semibold">
-                {t('Check-in assessment unavailable')}:{' '}
-              </span>
-              {checkinError}
-            </div>
+          {result && (
+            <CheckinFlowCard
+              baseUrl={baseUrl}
+              accountId={accountId}
+              requestId={result.identity.request_id}
+            />
           )}
         </div>
 
         <div className="min-w-0 space-y-6">
           {result ? (
-            <>
-              <EvidenceLanes
-                challenge={result.challenge}
-                collected={result.collected}
-              />
-              <SignatureCard signature={result.signature} />
-            </>
+            <EvidenceLanes
+              challenge={result.challenge}
+              request={result.request}
+            />
           ) : (
             status !== 'running' && <EmptyPipeline />
           )}

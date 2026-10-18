@@ -1,32 +1,8 @@
 # @cdlab/fingerprintd
 
-Browser SDK for the [`fingerprintd`](../../crates/fingerprintd) challenge/identify
-flow. It **collects** client-observed evidence and submits it; the **server**
-judges. The client never derives a `visitorId` or a hash — the identity returned
-by the server is authoritative.
-
-## Flow
-
-```
-GET  /challenge    -> nonce + collection plan (+ probe transform when enforced)
-collect(challenge) -> { stable_components, probe?, ts, integrity }
-POST /identify     -> { visitorId, confidence, decision, signals, ... }
-```
-
-`run()` wires these together with an injected `Collector`. The evidence fields
-stay in their lanes:
-
-- `stable_components` — the "who is this device" matching input.
-- `probe` — `hex(HMAC-SHA256(key, nonce))` computed in WASM, the
-  nonce-seeded **freshness** proof (NEVER a matching signal). Sent only when
-  the challenge advertises `collect.challenge.verify` (i.e. the server has a
-  probe key). See [WASM probe](#wasm-probe).
-- `ts` — the client clock (Unix ms) at collection (the server timestamp window).
-- `integrity` — four known-answer probe verdicts (`canvas` / `webgl` / `audio` /
-  `rect`, each `ok` | `noise` | `unavailable`) that catch fingerprint-noising
-  browsers (`src/integrity.ts`). Top-level by design — never inside
-  `stable_components`, so it cannot enter the `visitorId` match; the server
-  surfaces it as a risk signal. `unavailable` is neutral.
+Pure-TypeScript browser SDK for the [`fingerprintd`](../../crates/fingerprintd)
+challenge/identify flow. It **collects** client-observed evidence and submits
+it; the **server** judges. The client never derives a visitor id or a hash.
 
 ## Usage
 
@@ -37,103 +13,144 @@ npm i @cdlab/fingerprintd
 ```ts
 import { createCollector, run } from '@cdlab/fingerprintd'
 
-const { identity, signatureValid } = await run({
+const result = await run({
   baseUrl: 'https://fp.example.com',
-  // The full collector composes the stable half + WASM probe.
   collect: createCollector(),
-  // Optional: verify the response signature (see below).
-  signingKey: /* Uint8Array */ undefined,
 })
+
+// Display-only. Send `result.request_id` to your backend.
+console.log(result.visitor_id, result.decision, result.request_id)
 ```
 
-`createCollector()` uses the real FingerprintJS + BotD stack and the WASM probe.
-Every backend is injectable (`{ fingerprint, probe, now, integrity }`) for tests. A trivial
-`stubCollector` is also exported for wiring smoke-tests; it gathers **no real
-fingerprint**.
+`createCollector()` runs FingerprintJS + BotD and the integrity probes. Every
+backend is injectable (`{ fingerprint: { loadFingerprint, loadBotd, userAgent },
+integrity }`) for tests. `getChallenge()` and `identify()` are exported for
+callers that drive the two requests themselves.
 
-> The server still advertises `collect.challenge.targets` (`['canvas','audio']`)
-> and `collect.challenge.seed`, but the client no longer consumes them: the
-> active-challenge collector was removed because neither backend read its output.
-> The `probe` field is the live freshness control.
+### Authoritative result
 
-## WASM probe
+The `/identify` response the browser receives is **display-only** — anything
+running in the page can be tampered with. Your backend fetches the
+authoritative result server-to-server, keyed by the returned `request_id`:
 
-The nonce probe is computed by the [`fp-wasm`](../../crates/fp-wasm) crate,
-compiled to WebAssembly and **vendored** under [`wasm/`](./wasm). `createCollector`
-calls its `probe(nonce)` export; in the browser the module loads its co-located
-`fp_wasm_bg.wasm` sibling, and `bun run build` copies that `.wasm` into `dist/`
-next to the bundle.
-
-The transform is byte-for-byte identical to the server verifier
-(`crates/fingerprintd/src/probe.rs`). `test/probe.test.ts` proves this by
-instantiating the vendored WASM headlessly (reading the `.wasm` bytes — a
-`--target web` build otherwise fetches by URL, which Node cannot do) and
-asserting the **shared parity vector** in
-`crates/fp-wasm/tests/vectors/probe.json`:
-
-```
-probe("fixed-nonce-000") === "ad83144894f917b94072c2f7b3246af66d3bc5a450562ccf3671ed64d33137d0"
+```http
+GET /events/{request_id}
+Authorization: Bearer <FP_API_KEY>
 ```
 
-> **The vendored `wasm/fp_wasm_bg.wasm` is a DEV build keyed with the vector's
-> `test-probe-secret`**, so the parity test can run without a browser. The
-> `.wasm` shipped in the npm package is that same dev-keyed build — its key is
-> public by construction. A real deployment must rebuild it with the server's
-> key (see below) and hand the rebuilt module to `initProbe()`.
+This endpoint is server-side only; the SDK does not call it and the API key must
+never ship to the browser.
 
-## Environment limit — no real browser here
+## Wire format
 
-This package was built in an environment with **no headless browser**. Canvas /
-audio / WebGL cannot be exercised for real and there is **no real in-browser
-e2e**. Tests are **unit/mock only**:
+```
+GET  /challenge  -> { nonce, expires_in }
+collect()        -> { components, user_agent?, botd?, integrity? }
+POST /identify   -> { request_id, visitor_id, confidence, decision, ... }
+```
 
-- jsdom + **mocked** `fetch`, canvas, and audio backends (deterministic fakes),
-- the **WASM parity vector** above (a real WASM instantiation, but a fixed
-  key+nonce vector — not a real device fingerprint).
+`run()` fetches the challenge, runs the collector, stamps `ts` right before the
+POST and submits. All JSON is snake_case; the server rejects unknown keys at
+every level with `400`.
 
-They cover the wire contract, the collector wiring, and the probe/signature
-crypto — they do **not** validate real fingerprints. Real in-browser
-certification is **deferred to a human**.
+`GET /challenge` → `200`:
 
-### Running real in-browser certification
+```json
+{ "nonce": "…", "expires_in": 30 }
+```
 
-1. Build & serve the bundle: `bun run build`, then serve `dist/` (so both
-   `index.js` and its sibling `fp_wasm_bg.wasm` are reachable) over HTTP.
-2. Open it in a **real browser** pointed at a running `fingerprintd`.
-3. Exercise the flow end-to-end: `GET /challenge` → `collect` → `POST /identify`,
-   and confirm the returned `visitorId`/`decision` are stable across reloads and
-   distinct across devices.
+`POST /identify` body:
 
-## Enabling the server probe & response signing
+```jsonc
+{
+  "nonce": "…",                 // from /challenge
+  "ts": 1792329908414,          // Unix ms, always sent
+  "components": { "platform": "Win32", "cpu_cores": 8, "fonts": ["Arial"] },
+  "user_agent": "Mozilla/5.0 …", // optional
+  "botd": { "bot": false },      // optional; { "bot": true, "kind": "headless_chrome" }
+  "integrity": { "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" } // optional
+}
+```
 
-Both are **defense in depth**, off by default:
+`POST /identify` → `200`:
 
-- **Probe:** set `probe_key` in the `fingerprintd` config. Enforcement
-  activates whenever `probe_key` is `Some` (non-empty) — there is **no separate
-  `require_probe` flag** (`crates/fingerprintd/src/config.rs`, `probe.rs`). The
-  server then advertises `collect.challenge.verify` and rejects a missing/wrong
-  `probe` with `401`. The **same key must be embedded in the WASM build**:
+```jsonc
+{
+  "request_id": "…",
+  "visitor_id": "…",
+  "confidence": 0.87,
+  "decision": "match",          // "match" | "review" | "new_device"
+  "is_new_device": false,
+  "collision_risk": false,
+  "signals": {
+    "ua_tls_consistent": true,
+    "ip_risk": "low",                   // "low" | "medium" | "high"
+    "client_integrity": "ok",           // "ok" | "noise" | "unavailable"
+    "persona_coherence": "consistent",  // "consistent" | "mismatch" | "unknown"
+    "new_device_velocity": "low",       // "low" | "medium" | "high"
+    "automation": "not_detected",       // "detected" | "not_detected" | "unknown"
+    "template_jump": false
+  }
+}
+```
 
-  ```sh
-  FP_PROBE_KEY=<your probe_key> wasm-pack build --target web crates/fp-wasm
-  # then copy fp_wasm.js / fp_wasm.d.ts / fp_wasm_bg.wasm(.d.ts) into packages/client/wasm/
-  ```
+`confidence` is decision confidence, not identity trust: key trust off
+`is_new_device` / `decision`.
 
-- **Response signature:** set `response_signing_key` in the config. Each
-  `/identify` success then carries `x-fp-timestamp` and `x-fp-signature`
-  (`hex(HMAC-SHA256(key, be64(issuedMs) ++ body))`, `signing.rs`). Pass the same
-  key to the client as `run({ signingKey })` to have `run()` verify it.
+## Component schema
 
-> **Embedded-secret depth caveat:** an attacker can extract the probe/signing key
-> from the shipped WASM/JS. This raises the bar against blind replay/forgery but
-> is **not a decisive control** — the one-time nonce and TLS remain the primary
-> guarantees. Rotate keys accordingly.
+`components` is a closed schema (`COMPONENT_KEYS`, mirroring
+`crates/fp-core/src/fuzzy/component.rs`). The adapter maps FingerprintJS output
+onto it and drops every other FingerprintJS component.
+
+| Key | FingerprintJS source | Kind |
+| --- | --- | --- |
+| `webgl` | `webGlBasics` (`vendor\|renderer`) | Category |
+| `webgl_extensions` | `webGlExtensions` (digest) | Category |
+| `platform` | `platform` | Category |
+| `timezone` | `timezone` | Category |
+| `languages` | `languages` (joined) | Category |
+| `audio` | `audio` | Category |
+| `canvas` | `canvas` (digest) | Category |
+| `cpu_cores` | `hardwareConcurrency` | Numeric |
+| `device_memory` | `deviceMemory` | Numeric |
+| `screen` | `screenResolution` (`WxH`) | Category |
+| `fonts` | `fonts` | Set |
+| `plugins` | `plugins` (names) | Set |
+| `font_preferences` | `fontPreferences` | Category |
+| `screen_frame` | `screenFrame` | Category |
+| `math` | `math` | Category |
+| `touch_support` | `touchSupport` | Category |
+| `dom_blockers` | `domBlockers` | Category |
+| `user_agent_data` | `userAgentData` | Category |
+
+Numeric values are JSON numbers, Sets are string arrays, Categories are a
+string, number or boolean (object/array values are digested). `user_agent` is
+not a component — it is the top-level `user_agent` field.
+
+## Integrity
+
+`integrity` carries four known-answer probe verdicts (`canvas` / `webgl` /
+`audio` / `rect`, each `ok` | `noise` | `unavailable`) that catch
+fingerprint-noising browsers (`src/integrity.ts`). It is a top-level field,
+outside `components`, so it never enters the visitor match; the server surfaces
+it as `signals.client_integrity`. `unavailable` is neutral. Legitimate privacy
+tooling (Brave farbling, canvas blockers) trips the same probes, so treat
+`noise` as a risk band, not proof of automation.
+
+## Testing
+
+There is no headless browser in this environment, so canvas / audio / WebGL are
+not exercised for real. Tests run in jsdom with a mocked `fetch` and injected
+fakes, plus real FingerprintJS captures (`tests/fixtures/fjs-raw/`) and a
+real-device payload (`tests/fixtures/sdk-payload/`) checked against the
+component schema. Real in-browser certification is done by a human against a
+running `fingerprintd`.
 
 ## Scripts
 
 ```
-bun run lint       # biome check .
 bun run typecheck  # tsc --noEmit
 bun run test       # vitest run
-bun run build      # tsup (ESM + d.ts, copies the probe wasm into dist/)
+bun run build      # tsdown (ESM + d.ts)
 ```

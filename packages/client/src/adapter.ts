@@ -1,41 +1,34 @@
 /**
- * FingerprintJS → server-schema adapter (part a).
+ * FingerprintJS → closed component schema adapter.
  *
- * PROBLEM: FingerprintJS `get()` returns each component as a nested
- * `{ value, duration }` wrapper keyed by FJS names (`hardwareConcurrency`,
- * `webGlBasics`, …). The Rust server's fuzzy matcher
- * (`crates/fp-core/src/fuzzy/mod.rs` `classify()` + `canonical_scalar` /
- * `value_to_i64`) recognizes a FIXED schema of snake_case names and stores only
- * scalars (Category/Numeric) or string arrays (Set) — it silently drops objects
- * and unknown-shaped values. Spreading FJS output verbatim therefore leaves real
- * probes unmatchable.
+ * FingerprintJS `get()` returns each component as a `{ value, duration }`
+ * wrapper keyed by FJS names (`hardwareConcurrency`, `webGlBasics`, …). The
+ * server accepts only the closed snake_case schema in `schema.ts`, each value of
+ * its component's kind, and rejects anything else.
  *
- * This module is the pure, browser-free transform that reshapes FJS `components`
- * into the server schema:
+ * This module is the pure, browser-free transform from FJS `components` to
+ * {@link Components}:
  *  1. unwrap the `{ value, duration }` wrapper (dropping FJS error components,
- *     which carry `{ error, duration }` and no `value`);
- *  2. rename FJS keys to their server-schema counterparts ({@link KEY_MAP});
- *  3. normalize each value to the storable kind the server expects: object/array
- *     values are canonicalized per field ({@link CANONICALIZERS}), any other
- *     non-scalar is hashed under its FJS name, so no component carrying a value
- *     is silently dropped.
+ *     which carry `{ error, duration }` and no `value`, and null values);
+ *  2. map FJS names to schema keys ({@link KEY_MAP}); every unmapped FJS
+ *     component is dropped;
+ *  3. normalize each value to its component kind: object/array values are
+ *     canonicalized per field ({@link CANONICALIZERS}), any other object/array
+ *     for a Category key is digested; values of the wrong kind are dropped.
  *
  * The contract against real browser output is
  * `tests/integration/fjs-contract.test.ts`.
  */
 
 import { murmurX64Hash128 } from '@fingerprintjs/fingerprintjs'
+import type { ComponentKey, Components } from './schema'
 
 /**
- * FJS component name → server-schema name. The target names are exactly the set
- * `crates/fp-core/src/fuzzy/component.rs` `classify()` recognizes; keep this
- * table in sync with that authoritative list.
- *
- * FingerprintJS exposes NO raw userAgent among its stable components, so
- * `user_agent` is intentionally left unmapped — the UA rides separately under
- * `botd`, which this unit does not touch.
+ * FJS component name → schema key, one entry per {@link ComponentKey}.
+ * FingerprintJS exposes no raw userAgent among its components; the UA travels
+ * as the request's top-level `user_agent`.
  */
-const KEY_MAP: Record<string, string> = {
+const KEY_MAP: Record<string, ComponentKey> = {
   hardwareConcurrency: 'cpu_cores',
   deviceMemory: 'device_memory',
   screenResolution: 'screen',
@@ -48,16 +41,20 @@ const KEY_MAP: Record<string, string> = {
   canvas: 'canvas',
   webGlBasics: 'webgl',
   webGlExtensions: 'webgl_extensions',
+  fontPreferences: 'font_preferences',
+  screenFrame: 'screen_frame',
+  math: 'math',
+  touchSupport: 'touch_support',
+  domBlockers: 'dom_blockers',
+  userAgentData: 'user_agent_data',
 }
 
-/**
- * Server-schema targets stored as a Set (`classify()` → `Kind::Set`), which the
- * server keeps only when the value is a string array. Every other mapped target
- * is a scalar Category/Numeric field.
- */
-const SET_TARGETS = new Set(['fonts', 'plugins'])
+/** Numeric components: kept only as finite numbers. */
+const NUMERIC_KEYS = new Set<ComponentKey>(['cpu_cores', 'device_memory'])
+/** Set components: kept only as string arrays. Every other key is a Category. */
+const SET_KEYS = new Set<ComponentKey>(['fonts', 'plugins'])
 
-/** A value the server can store as a scalar (Category / Numeric). */
+/** A Category scalar. */
 function isScalar(value: unknown): value is string | number | boolean {
   return (
     typeof value === 'string' ||
@@ -117,27 +114,39 @@ const CANONICALIZERS: Record<string, (value: unknown) => unknown> = {
       : undefined,
 }
 
+/** Normalize `value` to the kind of `key`; `undefined` drops it. */
+function toKind(key: ComponentKey, value: unknown): unknown {
+  if (NUMERIC_KEYS.has(key)) {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? value
+      : undefined
+  }
+  if (SET_KEYS.has(key)) {
+    return Array.isArray(value) && value.every((v) => typeof v === 'string')
+      ? value
+      : undefined
+  }
+  if (isScalar(value)) return value
+  return typeof value === 'object' ? digest(value) : undefined
+}
+
 /**
- * Reshape raw FingerprintJS `components` into the Rust server's matching schema.
+ * Reshape raw FingerprintJS `components` into the closed component schema.
  *
  * Per entry: unwrap `{ value, duration }` (dropping error components without a
- * `value`), canonicalize via {@link CANONICALIZERS}, drop `null`/`undefined`,
- * then either rename via {@link KEY_MAP} and type-normalize, or — for
- * unrecognized names — pass the value through under its ORIGINAL FJS name
- * (hashed when it is an object/array). On a name collision the mapped value wins.
+ * `value`), drop unmapped FJS names, canonicalize via {@link CANONICALIZERS},
+ * drop `null`/`undefined`, then normalize to the key's kind.
  */
 export function adaptFingerprintComponents(
   components: Record<string, unknown>,
-): Record<string, unknown> {
-  // Passthroughs are written first; mapped targets are spread last so a mapped
-  // value always wins a collision against an unmapped passthrough of the same
-  // name (rule 5).
-  const passthrough: Record<string, unknown> = {}
-  const mapped: Record<string, unknown> = {}
+): Components {
+  const out: Record<string, unknown> = {}
 
-  for (const [key, entry] of Object.entries(components)) {
-    // Unwrap the FJS wrapper. An entry without an own `value` (an FJS error
-    // component `{ error, duration }`, or any non-object) is dropped.
+  for (const [name, entry] of Object.entries(components)) {
+    if (!Object.hasOwn(KEY_MAP, name)) continue
+    const key = KEY_MAP[name] as ComponentKey
+    // An entry without an own `value` (an FJS error component
+    // `{ error, duration }`, or any non-object) is dropped.
     if (
       typeof entry !== 'object' ||
       entry === null ||
@@ -146,29 +155,13 @@ export function adaptFingerprintComponents(
       continue
     }
     const raw = (entry as { value: unknown }).value
-    const canonicalize = CANONICALIZERS[key]
+    const canonicalize = CANONICALIZERS[name]
     const value = canonicalize ? canonicalize(raw) : raw
     if (value === null || value === undefined) continue
 
-    const target = KEY_MAP[key]
-    if (target !== undefined) {
-      if (SET_TARGETS.has(target)) {
-        // Set fields keep only arrays; the server drops non-array Set values.
-        if (Array.isArray(value)) {
-          mapped[target] = value
-        }
-      } else if (isScalar(value)) {
-        mapped[target] = value
-      }
-    } else if (isScalar(value)) {
-      // Unknown FJS name: the server defaults it to a medium-stability category.
-      passthrough[key] = value
-    } else {
-      // Unmapped object/array (touchSupport, userAgentData, math, …): hash it
-      // so its entropy still reaches the matcher as a category value.
-      passthrough[key] = digest(value)
-    }
+    const kinded = toKind(key, value)
+    if (kinded !== undefined) out[key] = kinded
   }
 
-  return { ...passthrough, ...mapped }
+  return out as Components
 }

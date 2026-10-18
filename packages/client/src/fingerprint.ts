@@ -1,31 +1,28 @@
 /**
- * The STABLE half of a real {@link Collector}: FingerprintJS (OSS) raw
- * components + BotD signals. This is the "who is this device" evidence the
- * SERVER matches on — it is NOT a verdict.
+ * The STABLE half of a real {@link Collector}: FingerprintJS (OSS) components,
+ * the BotD verdict and the user agent. This is the "who is this device"
+ * evidence the SERVER matches on — it is NOT a verdict.
  *
- * DESIGN (architecture §4.1 / §4.4):
- *  - We take FingerprintJS's RAW `components` and DISCARD its `visitorId`/hash.
- *    The client never ships a client-side id; the authoritative visitorId is
- *    whatever the server returns from `/identify`.
- *  - BotD signals are merged under a `botd` sub-object of `stable_components`.
- *  - This module emits ONLY `stable_components`. The nonce-seeded `probe` is a
- *    SEPARATE freshness proof and must never become a matching signal — so
- *    it is absent here.
+ * DESIGN:
+ *  - FingerprintJS's raw `components` are adapted to the closed schema and its
+ *    `visitorId` hash is DISCARDED. The client never ships a client-side id;
+ *    the authoritative visitor id is whatever the server returns.
+ *  - BotD's verdict is reduced to `{ bot, kind? }`; its raw signals stay in the
+ *    browser.
  *
  * TREE-SHAKING: kept in its own module (not `collect.ts`) so importing the
- * stub/interface does not pull in FingerprintJS or BotD. The heavy deps load
- * only when a consumer imports {@link createFingerprintCollector}.
+ * interface does not pull in FingerprintJS or BotD. The heavy deps load only
+ * when a consumer imports {@link createFingerprintCollector}.
  *
- * INJECTABLE: the two loaders are injectable so tests can supply fakes and
- * assert the WIRING (component pass-through, visitorId discard, BotD merge)
- * without a real browser. There is no headless browser in this environment, so
- * real component VALUES are never exercised — only the plumbing is tested.
+ * INJECTABLE: the loaders and the user-agent source are injectable so tests can
+ * supply fakes and assert the wiring without a real browser.
  */
 
 import { load as loadBotd } from '@fingerprintjs/botd'
 import FingerprintJS from '@fingerprintjs/fingerprintjs'
 import { adaptFingerprintComponents } from './adapter'
 import type { Collected, Collector } from './collect'
+import type { Botd } from './types'
 
 /** Minimal structural view of a loaded FingerprintJS agent — only the surface
  *  this collector uses. `get()` returns the raw components plus the `visitorId`
@@ -35,63 +32,64 @@ export interface FingerprintAgent {
 }
 
 /** Minimal structural view of a loaded BotD detector. `collect()` gathers the
- *  raw signals, `detect()` runs the (discarded) client-side verdict, and
- *  `getComponents()` returns the raw signals we forward to the server. */
+ *  raw signals and `detect()` returns the client-side verdict. */
 export interface BotdDetector {
   collect(): Promise<unknown>
-  detect(): unknown
-  getComponents(): unknown
+  detect(): { bot: boolean; botKind?: string }
 }
 
-/** Injectable module loaders (defaulted to the real OSS packages). */
+/** Injectable dependencies (defaulted to the real browser sources). */
 export interface FingerprintCollectorDeps {
   /** Load a FingerprintJS agent. Defaults to `FingerprintJS.load()`. */
   loadFingerprint?: () => Promise<FingerprintAgent>
   /** Load a BotD detector. Defaults to `botd.load({ monitoring: false })` —
    *  monitoring is off so the OSS detector never phones home. */
   loadBotd?: () => Promise<BotdDetector>
+  /** User-agent source. Defaults to `navigator.userAgent` when `navigator`
+   *  exists. */
+  userAgent?: () => string | undefined
 }
+
+const defaultUserAgent = (): string | undefined =>
+  typeof navigator === 'undefined' ? undefined : navigator.userAgent
 
 /**
  * Build a real {@link Collector} over FingerprintJS + BotD.
  *
- * The returned collector ignores the challenge (the stable half is nonce-free
- * by design — architecture §4.1) and produces only `stable_components`:
- *  - every FingerprintJS component, ADAPTED to the server matching schema
- *    ({@link adaptFingerprintComponents} unwraps the FJS
- *    `{ value, duration }` wrapper and renames keys; a verbatim spread would be
- *    silently dropped by the server matcher), and
- *  - the BotD detection result + raw signals under a `botd` key (BotD is not
- *    adapted — it rides untouched under `botd`).
- * The FingerprintJS `visitorId`/hash is never read into the payload.
+ * The returned collector produces:
+ *  - `components` — every FingerprintJS component adapted to the closed schema
+ *    ({@link adaptFingerprintComponents}); the FJS `visitorId` is never read
+ *    into the payload;
+ *  - `botd` — `{ bot: true, kind }` when BotD detects automation, otherwise
+ *    `{ bot: false }`;
+ *  - `user_agent` — when a user agent is available.
  */
 export function createFingerprintCollector(
   deps: FingerprintCollectorDeps = {},
 ): Collector {
   const loadFingerprint = deps.loadFingerprint ?? (() => FingerprintJS.load())
   const load = deps.loadBotd ?? (() => loadBotd({ monitoring: false }))
+  const userAgent = deps.userAgent ?? defaultUserAgent
 
   return async (): Promise<Collected> => {
     const agent = await loadFingerprint()
-    // Take the RAW components only; the `visitorId` hash is intentionally
-    // discarded (architecture §4.4 — the client-side verdict is thrown away).
+    // Take the raw components only; the `visitorId` hash is discarded.
     const { components } = await agent.get()
 
     const detector = await load()
     await detector.collect()
-    const botd = {
-      detection: detector.detect(),
-      signals: detector.getComponents(),
-    }
+    const detection = detector.detect()
+    const botd: Botd =
+      detection.bot && detection.botKind !== undefined
+        ? { bot: true, kind: detection.botKind }
+        : { bot: detection.bot }
 
-    // Adapt FJS components to the server matching schema before they become
-    // stable_components; botd is merged untouched under its own key.
-    const stable_components: Record<string, unknown> = {
-      ...adaptFingerprintComponents(components),
+    const collected: Collected = {
+      components: adaptFingerprintComponents(components),
       botd,
     }
-    // ONLY stable_components — the nonce probe is a separate freshness proof
-    // and must never ride along as a matching signal.
-    return { stable_components }
+    const ua = userAgent()
+    if (ua !== undefined) collected.user_agent = ua
+    return collected
   }
 }
