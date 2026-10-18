@@ -1,25 +1,37 @@
 # Local secrets for `wrangler dev` — copy to `.dev.vars` (gitignored) and edit.
 #
 # `.dev.vars` is the local stand-in for Worker Secrets: `wrangler dev` loads it
-# into the same `env.FP_*` bindings `config.ts` reads, so you exercise the
-# secret-gated paths (deterministic salt, nonce probe, response signing) locally
-# without a Cloudflare account. In production these are NOT vars — set each with
-# `wrangler secret put <NAME>` (see README "Deploy"). Never commit real values.
-#
-# With none set the Worker mirrors a default `fingerprintd`: a dev-placeholder
-# salt, probe off, signing off.
+# into the same `env.*` bindings `src/config` and `src/db/client.ts` read, so
+# you exercise the secret-gated paths (deterministic salt, nonce probe, response
+# signing) locally without a Cloudflare account. In production these are NOT
+# vars — set each with `wrangler secret put <NAME>` (see README "Deploy"). Never
+# commit real values.
 
-# Seeds the deterministic salt + MinHash family. MUST be stable and identical
-# across every isolate, or blocking keys derived on one request will not match
-# those persisted on another. Set a real high-entropy secret in production.
+# REQUIRED. Seeds the deterministic salt + MinHash family; the Worker throws
+# without it. MUST be stable and identical across every isolate, or blocking
+# keys derived on one request will not match those persisted on another. Set a
+# real high-entropy secret in production.
 FP_SALT_SECRET = "local-dev-salt-change-me"
 
-# Pre-shared nonce-probe key (T8). Set to require a correct probe on /identify;
+# Database — pick one:
+#
+# (a) libSQL (the default DB_TYPE): point at a local server, e.g.
+#     `turso dev --port 8081` (off the native server's default port), and
+#     add the auth token only if the server requires one.
+LIBSQL_URL = "http://127.0.0.1:8081"
+# LIBSQL_AUTH_TOKEN = ""
+#
+# (b) Local D1: set DB_TYPE to d1, then
+#       bun run cf:d1config && bun run cf:localdb
+#       bunx wrangler dev --local -c wrangler.d1.jsonc
+# DB_TYPE = "d1"
+
+# Pre-shared nonce-probe key. Set to require a correct probe on /identify;
 # leave unset/empty to keep the probe check off. Must equal the key the browser
 # collector was built with (packages/client) for a real probe to verify.
 # FP_PROBE_KEY = "local-dev-probe-key"
 
-# Response-signing key (T9). Set to sign /identify bodies (x-fp-signature +
+# Response-signing key. Set to sign /identify bodies (x-fp-signature +
 # x-fp-timestamp); leave unset/empty to leave responses unsigned.
 # FP_SIGNING_KEY = "local-dev-signing-key"
 

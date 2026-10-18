@@ -7,9 +7,9 @@
  * route (`POST /checkin/assess`) — plus the bare `GET /health`, serving the same
  * byte-compatible contracts as the native server (`crates/fingerprintd/src/lib.rs`)
  * so a client works against either. The route handlers themselves live in each
- * module's `*.routes.ts` and are aggregated by `routes/index.ts`; this file is
- * the composition root that wires CORS and mounts that aggregate over the
- * injected {@link Deps}.
+ * module's `*.routes.ts` and are aggregated (behind the per-IP rate limits) by
+ * `routes/index.ts`; this file is the composition root that wires CORS and
+ * mounts that aggregate over the injected {@link Deps}.
  */
 
 import { Hono } from 'hono'
@@ -29,10 +29,19 @@ export interface Deps {
   candidates: CandidateSource
   config: EdgeConfig
   checkin: CheckinStore
-  /** Cross-session new-device velocity, backed by the `VELOCITY` Durable Object.
-   *  Absent (binding unbound / test) ⇒ the velocity path degrades to the neutral
-   *  `'low'` band, exactly like the pre-DO stateless edge. */
-  velocity?: NewDeviceVelocityStore
+  /** Cross-session new-device velocity, backed by the `VELOCITY` Durable Object. */
+  velocity: NewDeviceVelocityStore
+  /** Per-IP limiter for `POST /identify` and `POST /checkin/assess`, backed by
+   *  the `RATE_LIMIT` binding. */
+  rateLimiter: RateLimiter
+  /** Per-IP limiter for `GET /challenge`, backed by the `CHALLENGE_RATE_LIMIT`
+   *  binding — a separate bucket so a challenge flood cannot drain identify. */
+  challengeRateLimiter: RateLimiter
+}
+
+/** The slice of the Cloudflare `RateLimit` binding the edge uses. */
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>
 }
 
 /** Build the edge Hono app over the injected {@link Deps}. */

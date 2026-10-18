@@ -3,30 +3,44 @@
  *
  * The defaults mirror the native server's `Config::default`
  * (`crates/fingerprintd/src/config.rs`): probe enforcement OFF, response signing
- * OFF, timestamp window OFF, nonce TTL 30s, ±30s skew. With no bindings set the
- * Worker therefore behaves like a default `fingerprintd`, so a client works
- * against either unchanged.
+ * OFF, timestamp window OFF, nonce TTL 30s, ±30s skew, so a client works
+ * against either unchanged. `FP_SALT_SECRET` has no default: an unset salt
+ * throws instead of deriving blocking keys from a public placeholder.
  *
- * In a real deployment `FP_SALT_SECRET`, `FP_PROBE_KEY`, and `FP_SIGNING_KEY`
- * are Worker Secrets; the rest are `[vars]`. Secrets are never embedded.
+ * `FP_SALT_SECRET`, `FP_PROBE_KEY`, `FP_SIGNING_KEY`, `FP_ADMIN_KEY`, and
+ * `LIBSQL_AUTH_TOKEN` are Worker Secrets; the rest are `[vars]`. Secrets are
+ * never embedded.
  */
 
 /** Cloudflare Worker environment bindings: string-typed config vars plus the
- *  state bindings. All optional so the router stays unit-testable with
- *  injected stubs and the Worker degrades to in-isolate state when unbound. */
+ *  state bindings. Typed optional so a missing binding is checked at startup
+ *  (`src/index.ts` throws) rather than assumed; Node tests inject fakes. */
 export interface Env {
-  /** Nonce Durable Object namespace. Unbound ⇒ the in-isolate stub. */
+  /** Nonce Durable Object namespace. Required: unbound ⇒ startup throws. */
   NONCE?: DurableObjectNamespace
-  /** D1 database: fingerprint library + blocking index + check-in event log.
-   *  Unbound ⇒ the empty candidate + check-in store stubs. */
+  /** Database driver: `"libsql"` (default when unset/empty) or `"d1"`. */
+  DB_TYPE?: string
+  /** libSQL server URL (e.g. Turso). Required when `DB_TYPE` is `libsql`. */
+  LIBSQL_URL?: string
+  /** libSQL auth token (Worker Secret). Omit for an unauthenticated server. */
+  LIBSQL_AUTH_TOKEN?: string
+  /** D1 binding holding the fingerprint library + blocking index + check-in
+   *  event log. Required when `DB_TYPE` is `d1`. */
   DB?: D1Database
-  /** Velocity Durable Object namespace for hot check-in fan-out counters. */
+  /** Velocity Durable Object namespace for the cross-session new-device
+   *  velocity counters. Required: unbound ⇒ startup throws. */
   VELOCITY?: DurableObjectNamespace
+  /** Per-IP rate limiter for `POST /identify` and `POST /checkin/assess`.
+   *  Required: unbound ⇒ startup throws. */
+  RATE_LIMIT?: RateLimit
+  /** Per-IP rate limiter for `GET /challenge`, separate from `RATE_LIMIT`.
+   *  Required: unbound ⇒ startup throws. */
+  CHALLENGE_RATE_LIMIT?: RateLimit
   /** Check-in retention window in seconds: events older than this are purged by
    *  the scheduled cron. `0`/unset ⇒ check-in retention disabled. */
   CHECKIN_RETENTION_SECS?: string
   /** Seeds the deterministic salt + MinHash family so blocking keys are stable
-   *  across isolates (Worker Secret). Falls back to a dev-only placeholder. */
+   *  across isolates (Worker Secret). Required: unset/blank ⇒ startup throws. */
   FP_SALT_SECRET?: string
   /** Pre-shared nonce-probe key (Worker Secret). Empty/unset ⇒ probe OFF. */
   FP_PROBE_KEY?: string
@@ -84,10 +98,6 @@ export interface EdgeConfig {
   corsOrigins: string[]
 }
 
-/** A dev-only salt seed used when `FP_SALT_SECRET` is unset. A real deployment
- *  MUST set the secret, or blocking keys are neither private nor deployment-bound. */
-const DEV_SALT_SECRET = 'fp-edge-dev-salt'
-
 /** Read a boolean flag var: `"1"`, `"true"`, `"yes"` (case-insensitive) ⇒ true. */
 function flag(value: string | undefined): boolean {
   if (value === undefined) return false
@@ -102,11 +112,12 @@ function intVar(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback
 }
 
-/** Treat an empty/whitespace secret as unset so it disables its feature. */
+/** Read a secret trimmed; empty/whitespace counts as unset so it disables its
+ *  feature. */
 function secret(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
   const trimmed = value.trim()
-  return trimmed.length > 0 ? value : undefined
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
 /** Parse a comma-separated origin list, trimming blanks. Empty ⇒ CORS off. */
@@ -120,8 +131,14 @@ function originList(value: string | undefined): string[] {
 
 /** Resolve the typed {@link EdgeConfig} from raw environment bindings. */
 export function resolveConfig(env: Env): EdgeConfig {
+  const saltSecret = secret(env.FP_SALT_SECRET)
+  if (!saltSecret) {
+    throw new Error(
+      'FP_SALT_SECRET is required (set it with `wrangler secret put FP_SALT_SECRET`, or in .dev.vars for local dev)',
+    )
+  }
   return {
-    saltSecret: secret(env.FP_SALT_SECRET) ?? DEV_SALT_SECRET,
+    saltSecret,
     probeKey: secret(env.FP_PROBE_KEY),
     signingKey: secret(env.FP_SIGNING_KEY),
     enforceTsWindow: flag(env.FP_ENFORCE_TS_WINDOW),

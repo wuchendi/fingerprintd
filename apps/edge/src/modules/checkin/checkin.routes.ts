@@ -8,8 +8,7 @@
  * identify body. `ip`/`ts` are observed edge-side (never from the body); the
  * event is recorded BEFORE the aggregates are read so this check-in is
  * reflected. Dependencies are injected ({@link CheckinDeps}) so the router is
- * unit-testable without the Workers runtime. Response shapes and status codes
- * are byte-identical to the pre-split handler.
+ * unit-testable without the Workers runtime.
  */
 
 import { zValidator } from '@hono/zod-validator'
@@ -19,7 +18,7 @@ import type { Aggregates } from '../../config/risk-config'
 import { defaultProfiles } from '../../config/risk-config'
 import type { AssessRequest } from '../../lib/types'
 import type { CheckinStore } from './checkin-state'
-import type { AggregateResult } from './checkin-store-d1'
+import type { AggregateResult } from './checkin-store'
 import { assess } from './risk-engine'
 
 /** The check-in routes' slice of the injected deps. */

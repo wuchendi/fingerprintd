@@ -1,7 +1,7 @@
 /**
- * The D1-backed fingerprint library: stage-one candidate recall plus
- * drift persistence, the externalized form of `fingerprintd::fuzzy`'s in-memory
- * `RecordStore` + `BlockingIndex`.
+ * The fingerprint library: stage-one candidate recall plus drift persistence,
+ * the externalized form of `fingerprintd::fuzzy`'s in-memory `RecordStore` +
+ * `BlockingIndex`.
  *
  * Two tables (see `src/db/schema.ts`): `templates` holds each visitor's RAW
  * component object (the WASM engine re-salts it on recall, so no salted state is
@@ -10,13 +10,12 @@
  * (fuzzy-matching §7): a match drifts the template, a new device stores a fresh one, a
  * review writes nothing.
  *
- * Queries go through Drizzle (`drizzle-orm/d1`); the emitted SQL is equivalent
- * to the hand-written statements it replaced, so the cross-stack parity holds.
+ * Queries go through Drizzle on the database client (`src/db/client.ts`, libSQL
+ * or D1), so the store is driver-neutral.
  */
 
 import { eq, inArray, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/client'
-import { getDb } from '../../db/client'
 import { blockingIndex, templates } from '../../db/schema'
 import type { Candidate, CandidateSource } from '../../lib/state'
 import type { ScoreOutcome } from '../../lib/types'
@@ -25,7 +24,7 @@ import type { ScoreOutcome } from '../../lib/types'
  * Per-recall candidate cap, mirroring `fingerprintd::fuzzy::blocking::DEFAULT_MAX_BLOCK`.
  * A hot blocking key (e.g. stock iPhone Safari) unions into a huge, low-information
  * block; leaving it unbounded means every candidate is re-scored in-isolate by WASM
- * plus its D1 read cost (P99 blowup). Bounding recall matches the native index,
+ * plus its database read cost (P99 blowup). Bounding recall matches the native index,
  * whose per-block size cap drops over-capacity members (fuzzy-matching §4). The edge has no
  * metrics sink, so a truncated recall is surfaced via `console.warn` rather than a
  * dropped counter — the native "not silently truncated" rule, edge-shaped.
@@ -33,17 +32,17 @@ import type { ScoreOutcome } from '../../lib/types'
 export const DEFAULT_MAX_BLOCK = 1024
 
 /**
- * Recall + persist over D1 via Drizzle. Construct once per isolate from the `DB`
- * binding. Holds no state itself — every method is a query against the shared
- * database.
+ * Recall + persist over the database via Drizzle. Construct once per isolate
+ * from the client `getDb` returns. Holds no state itself — every method is a
+ * query against the shared database.
  */
-export class D1FingerprintStore implements CandidateSource {
+export class FingerprintStore implements CandidateSource {
   private readonly db: Db
   /** Max candidates a single `recall()` returns; over-cap blocks are truncated. */
   private readonly maxBlock: number
 
-  constructor(d1: D1Database, maxBlock: number = DEFAULT_MAX_BLOCK) {
-    this.db = getDb(d1)
+  constructor(db: Db, maxBlock: number = DEFAULT_MAX_BLOCK) {
+    this.db = db
     this.maxBlock = maxBlock
   }
 
@@ -177,22 +176,34 @@ export class D1FingerprintStore implements CandidateSource {
    * maxAgeMs` and their blocking-index rows, returning how many templates were
    * removed. `maxAgeMs <= 0` disables retention (returns 0 without touching the
    * table). Run from the scheduled cron (`index.ts`); also directly unit-tested.
+   *
+   * Both deletes select the stale set by the cutoff (the index rows through a
+   * subquery on `templates`), so each statement binds one parameter however
+   * many rows are stale — D1 caps a statement at 100. Index rows go first, in
+   * the same batch, while their templates still identify them. Counts first so
+   * the caller can log the reclaim without the purge returning every id.
    */
   async purgeOlderThan(nowMs: number, maxAgeMs: number): Promise<number> {
     if (maxAgeMs <= 0) return 0
     const cutoff = nowMs - maxAgeMs
-    const stale = await this.db
+    const stale = lt(templates.lastSeen, cutoff)
+    const row = await this.db
+      .select({ n: sql<number>`count(*)` })
+      .from(templates)
+      .where(stale)
+      .get()
+    const removed = row?.n ?? 0
+    if (removed === 0) return 0
+    const staleIds = this.db
       .select({ visitorId: templates.visitorId })
       .from(templates)
-      .where(lt(templates.lastSeen, cutoff))
-    if (stale.length === 0) return 0
-    const ids = stale.map((row) => row.visitorId)
+      .where(stale)
     await this.db.batch([
       this.db
         .delete(blockingIndex)
-        .where(inArray(blockingIndex.visitorId, ids)),
-      this.db.delete(templates).where(inArray(templates.visitorId, ids)),
+        .where(inArray(blockingIndex.visitorId, staleIds)),
+      this.db.delete(templates).where(stale),
     ])
-    return ids.length
+    return removed
   }
 }

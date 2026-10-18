@@ -1,34 +1,31 @@
 name: Deploy edge (Cloudflare)
 
 # Manual trigger only — deploying is explicit; CI (ci.yml) never auto-deploys.
-# Run from the Actions tab, optionally applying the remote D1 migrations first.
+# Run from the Actions tab; database migrations are applied first by default.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions):
 #   CLOUDFLARE_API_TOKEN   deploy auth for wrangler (Workers Scripts:Edit,
 #                          D1:Edit, and Account Settings:Read on the account)
 #   CLOUDFLARE_ACCOUNT_ID  deploy target account id
 #
-# Optional Worker runtime secrets (synced AFTER deploy; unset ones are skipped,
-# so leaving them blank keeps the Worker's current value):
-#   FP_SALT_SECRET   stable, high-entropy salt seed — set this for a real deploy
-#                    (else blocking keys use a dev placeholder, not deployment-bound)
-#   FP_PROBE_KEY     enables the nonce probe (T8) and is baked into the vendored
-#                    WASM this workflow rebuilds from source before deploy, so the
-#                    deployed Worker artifact is reproducible rather than the
-#                    committed dev build. NOTE: the Worker verifies probes with the
-#                    RUNTIME key (FpEngine), so this compile-time bake buys supply-
-#                    chain reproducibility, not probe behavior — browser-client
-#                    parity still needs packages/client/wasm rebuilt with the SAME key
-#                    when that front-end deploy lands.
-#   FP_SIGNING_KEY   enables response signing (T9).
+# Worker runtime secrets (synced BEFORE deploy so the new code never starts
+# without its config; empty ones are skipped, so an unset GitHub secret never
+# wipes an existing Worker secret):
+#   FP_SALT_SECRET     stable, high-entropy salt seed — required; the Worker
+#                      refuses to start without it
+#   FP_ADMIN_KEY       enables DELETE /visitor/{id}
+#   FP_API_KEY         server-to-server API key for the server-side API
+#   LIBSQL_URL         libSQL/Turso database URL (DB_TYPE=libsql, the default in
+#                      wrangler.jsonc; also selects the libSQL migrations)
+#   LIBSQL_AUTH_TOKEN  libSQL/Turso auth token
 
 on:
   workflow_dispatch:
     inputs:
       run_migrations:
-        description: 'Apply the remote D1 migrations before deploying'
+        description: 'Apply database migrations before deploying (libSQL when the LIBSQL_URL secret is set, else D1)'
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: deploy-edge
@@ -54,10 +51,6 @@ jobs:
 
       # Build the vendored WASM from source so the deployed Worker ships a
       # reproducible artifact (the WASM is a build output, not committed).
-      # FP_PROBE_KEY is baked in at compile time (crates/fp-wasm `option_env!`);
-      # unset ⇒ the dev placeholder. This is supply-chain reproducibility only:
-      # /identify still verifies probes with the RUNTIME key, and browser-client
-      # parity is a packages/client concern (rebuilt in deploy-web.yml).
       #
       # MUST run before `bun install`: the repo-root `prepare` script builds the
       # `@cdlab/fingerprintd` SDK on install, which imports the vendored
@@ -76,8 +69,6 @@ jobs:
           tool: wasm-pack
 
       - name: Build vendored WASM (crates/fp-wasm -> apps/edge/wasm + packages/client/wasm)
-        env:
-          FP_PROBE_KEY: ${{ secrets.FP_PROBE_KEY }}
         # `--out-dir` is resolved relative to the CRATE dir — pass an ABSOLUTE
         # path, else it lands in `crates/fp-wasm/apps/edge/wasm`. The client copy
         # only exists so the root `prepare` SDK build succeeds during install; the
@@ -91,32 +82,38 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Optional: apply the drizzle-kit migrations in apps/edge/src/database to
-      # the remote D1 bound in wrangler.jsonc before the code goes live.
-      - name: Apply D1 migrations (remote)
+      - name: Apply database migrations
         if: ${{ inputs.run_migrations }}
         working-directory: apps/edge
-        run: bun run cf:remotedb
+        env:
+          LIBSQL_URL: ${{ secrets.LIBSQL_URL }}
+          LIBSQL_AUTH_TOKEN: ${{ secrets.LIBSQL_AUTH_TOKEN }}
+        run: |
+          if [ -n "$LIBSQL_URL" ]; then
+            DB_TYPE=libsql bun run db:migrate
+          else
+            bun run cf:remotedb
+          fi
 
-      - name: Deploy
-        working-directory: apps/edge
-        run: bun run deploy
-
-      # Sync Worker runtime secrets from GitHub secrets (idempotent). Runs AFTER
-      # deploy so the Worker exists; empty GitHub secrets are skipped so an unset
-      # value never wipes an existing Worker secret.
+      # Sync Worker runtime secrets from GitHub secrets (idempotent). Runs BEFORE
+      # deploy so the new code never starts without its config; empty GitHub
+      # secrets are skipped so an unset value never wipes an existing Worker secret.
       - name: Sync Worker secrets
         working-directory: apps/edge
         env:
           FP_SALT_SECRET: ${{ secrets.FP_SALT_SECRET }}
-          FP_PROBE_KEY: ${{ secrets.FP_PROBE_KEY }}
-          FP_SIGNING_KEY: ${{ secrets.FP_SIGNING_KEY }}
+          FP_ADMIN_KEY: ${{ secrets.FP_ADMIN_KEY }}
+          FP_API_KEY: ${{ secrets.FP_API_KEY }}
+          LIBSQL_URL: ${{ secrets.LIBSQL_URL }}
+          LIBSQL_AUTH_TOKEN: ${{ secrets.LIBSQL_AUTH_TOKEN }}
         run: |
           jq -n '
             [
-              {key: "FP_SALT_SECRET",  value: env.FP_SALT_SECRET},
-              {key: "FP_PROBE_KEY",    value: env.FP_PROBE_KEY},
-              {key: "FP_SIGNING_KEY",  value: env.FP_SIGNING_KEY}
+              {key: "FP_SALT_SECRET",    value: env.FP_SALT_SECRET},
+              {key: "FP_ADMIN_KEY",      value: env.FP_ADMIN_KEY},
+              {key: "FP_API_KEY",        value: env.FP_API_KEY},
+              {key: "LIBSQL_URL",        value: env.LIBSQL_URL},
+              {key: "LIBSQL_AUTH_TOKEN", value: env.LIBSQL_AUTH_TOKEN}
             ]
             | map(select(.value != null and .value != ""))
             | from_entries
@@ -128,3 +125,7 @@ jobs:
             bunx wrangler secret bulk "$RUNNER_TEMP/edge-secrets.json"
           fi
           rm -f "$RUNNER_TEMP/edge-secrets.json"
+
+      - name: Deploy
+        working-directory: apps/edge
+        run: bun run deploy

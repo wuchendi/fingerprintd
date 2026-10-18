@@ -1,9 +1,9 @@
 /**
- * The D1-backed check-in event store: the relationship-graph state the rule
- * engine and the `/assess` endpoint consume. Mirrors
- * `apps/edge/src/fingerprint-store-d1.ts` — a stateless Drizzle wrapper over the
- * `DB` binding — but instead of recall/drift it appends check-in events and
- * derives the windowed farming aggregates from them.
+ * The check-in event store: the relationship-graph state the rule engine and
+ * the `/assess` endpoint consume. Like `../fingerprint/fingerprint-store.ts` it
+ * is a stateless Drizzle wrapper over the database client (libSQL or D1), but
+ * instead of recall/drift it appends check-in events and derives the windowed
+ * farming aggregates from them.
  *
  * One table (`src/db/schema.ts`): `checkin_events(account_id, visitor_id, ip,
  * ts)`. Every aggregate is a `COUNT(DISTINCT ...)` (or a small last-N scan)
@@ -14,7 +14,6 @@
 
 import { and, desc, eq, gte, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/client'
-import { getDb } from '../../db/client'
 import { checkinEvents } from '../../db/schema'
 
 /** One hour / one day in milliseconds — the units the windows below are cut in. */
@@ -36,7 +35,7 @@ export const NEW_DEVICE_SAMPLE = 20
  */
 export const INTERVAL_SAMPLE = 10
 
-/** A single check-in observation appended by {@link D1CheckinStore.record}. */
+/** A single check-in observation appended by {@link CheckinEventStore.record}. */
 export interface CheckinEvent {
   /** Business identity being assessed. */
   accountId: string
@@ -49,7 +48,7 @@ export interface CheckinEvent {
 }
 
 /**
- * The aggregate bundle returned by {@link D1CheckinStore.getAggregates}.
+ * The aggregate bundle returned by {@link CheckinEventStore.getAggregates}.
  * Top-level keys match the aggregate names EXACTLY so this is structurally
  * compatible with the canonical `Aggregates` type defined in parallel
  * (`src/config/risk-config.ts`); the endpoint reconciles the two. Every value is a plain
@@ -104,15 +103,15 @@ export interface AggregateResult {
 }
 
 /**
- * Append + aggregate over D1 via Drizzle. Construct once per isolate from the
- * `DB` binding. Holds no state itself — every method is a query against the
- * shared database.
+ * Append + aggregate over the database via Drizzle. Construct once per isolate
+ * from the client `getDb` returns. Holds no state itself — every method is a
+ * query against the shared database.
  */
-export class D1CheckinStore {
+export class CheckinEventStore {
   private readonly db: Db
 
-  constructor(d1: D1Database) {
-    this.db = getDb(d1)
+  constructor(db: Db) {
+    this.db = db
   }
 
   /** Append one check-in event. Rows are never updated — the append-only log is
@@ -123,8 +122,9 @@ export class D1CheckinStore {
 
   /**
    * Compute every aggregate for the `(accountId, visitorId, ip)` triple
-   * as of `now` (Unix ms). Independent queries are issued concurrently — D1
-   * serves each from a composite index — and folded into one {@link AggregateResult}.
+   * as of `now` (Unix ms). Independent queries are issued concurrently — the
+   * database serves each from a composite index — and folded into one
+   * {@link AggregateResult}.
    */
   async getAggregates(
     accountId: string,
@@ -301,7 +301,7 @@ export class D1CheckinStore {
   }
 
   /**
-   * Retention purge (mirrors `D1FingerprintStore.purgeOlderThan`): delete every
+   * Retention purge (mirrors `FingerprintStore.purgeOlderThan`): delete every
    * event stamped before `cutoffTs`, returning how many rows were removed. Run
    * from the scheduled cron (`index.ts`); also directly unit-tested. Counts
    * first so the caller can log the reclaim without a second scan.
