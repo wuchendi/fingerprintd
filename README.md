@@ -211,7 +211,7 @@ Per-component tooling:
 
 ## Publishing
 
-Two artifacts are published under one name, from one version (the Cargo workspace version and `packages/client/package.json` must agree; currently `0.0.2`):
+Two artifacts are published under one name, from one version (the Cargo workspace version and `packages/client/package.json` must agree; currently `0.1.0`):
 
 | Artifact | Registry | Install |
 |---|---|---|
@@ -223,7 +223,7 @@ The native server (`crates/fingerprintd`, crate `fingerprintd-server`) is a depl
 Releases run from [`.github/workflows/release.yml`](.github/workflows/release.yml): bump the version in both manifests, then push a matching tag:
 
 ```bash
-git tag v0.0.2 && git push origin v0.0.2
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The workflow verifies the tag against both manifests, tests and builds the SDK, publishes it to npm, publishes `fingerprintd` to crates.io, and finally creates a GitHub Release for the tag with generated notes. Each publish step skips a version the registry already has. It needs the `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` repository secrets. **The first release of a new package/crate must be token-based on both registries**; afterwards you can register the workflow as a trusted publisher (npm package settings / crates.io crate settings), remove the secrets, and the workflow falls back to OIDC. To publish once from a workstation instead:

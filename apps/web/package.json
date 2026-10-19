@@ -1,7 +1,7 @@
 {
   "name": "@cdlab/fingerprintd-web",
   "type": "module",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Browser playground for the fingerprintd challenge/identify flow — runs the @cdlab/fingerprintd SDK against a server and visualizes the result.",
