@@ -105,9 +105,11 @@
       }
     ]
   },
-  // Retention purge: the `scheduled` handler in src/index.ts runs daily
-  // at 03:00 UTC, deleting templates older than FP_RETENTION_SECS and check-in
-  // events older than CHECKIN_RETENTION_SECS (0 ⇒ that purge is a no-op).
+  // Daily maintenance: the `scheduled` handler in src/index.ts runs at 03:00
+  // UTC and (1) deletes expired identify events, (2) deletes templates not seen
+  // within FP_RETENTION_SECS, (3) trims the erased-visitor tombstones to their
+  // cap, and (4) deletes check-in events older than CHECKIN_RETENTION_SECS.
+  // A retention of 0 turns that purge off; (1) and (3) always run.
   "triggers": {
     "crons": ["0 3 * * *"]
   },
