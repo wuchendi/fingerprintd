@@ -1,6 +1,6 @@
 {
   "name": "fingerprintd",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Server-side device fingerprinting: Rust cargo workspace (server + fp-core + fp-wasm) plus a Bun workspace for the TS packages.",
   "type": "module",
   "private": true,

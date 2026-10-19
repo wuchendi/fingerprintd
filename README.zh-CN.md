@@ -211,7 +211,7 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的门(`.github/w
 
 ## 发布
 
-对外发布两个产物,同名、同版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致;当前为 `0.0.2`):
+对外发布两个产物,同名、同版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致;当前为 `0.1.0`):
 
 | 产物 | 仓库 | 安装 |
 |---|---|---|
@@ -223,7 +223,7 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的门(`.github/w
 发布由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 执行:同时提升两个清单里的版本号,再推送同名 tag:
 
 ```bash
-git tag v0.0.2 && git push origin v0.0.2
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 工作流校验 tag 与两个清单一致,测试并构建 SDK、发布到 npm,把 `fingerprintd` 发布到 crates.io,最后为该 tag 创建带自动生成说明的 GitHub Release。仓库中已存在的版本会被各发布步骤跳过。需要仓库 secrets `NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN`。**新包/新 crate 的首次发布在两个仓库都必须用 token**;之后可把该工作流注册为 trusted publisher(npm 包设置 / crates.io crate 设置)、删除 secrets,工作流会自动回退到 OIDC。若要在本机一次性发布:

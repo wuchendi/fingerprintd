@@ -23,7 +23,7 @@ name = "fingerprintd_server"
 path = "src/lib.rs"
 
 [dependencies]
-fingerprintd = { path = "../fp-core", version = "0.0.2" }
+fingerprintd = { path = "../fp-core", version = "0.1.0" }
 # `time` (additive over the workspace features) powers the retention sweep's
 # `tokio::time::interval`; the rest come from the workspace dep.
 tokio = { workspace = true, features = ["time"] }
