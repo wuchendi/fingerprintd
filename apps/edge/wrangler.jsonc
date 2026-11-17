@@ -131,9 +131,12 @@
   // within FP_RETENTION_SECS, (3) trims the erased-visitor tombstones to their
   // cap, and (4) deletes check-in events older than CHECKIN_RETENTION_SECS.
   // A retention of 0 turns that purge off; (1) and (3) always run.
-  "triggers": {
-    "crons": ["0 3 * * *"]
-  },
+  // Disabled for the demo deployment: the Workers Free plan allows 5 cron
+  // triggers per account. Without it nothing is purged and the tables grow;
+  // reads still skip expired events. Uncomment to enable.
+  // "triggers": {
+  //   "crons": ["0 3 * * *"]
+  // },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

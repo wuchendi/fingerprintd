@@ -172,7 +172,9 @@ schema in `src/db/` and created by the single drizzle-kit migration
 
 The daily cron (`03:00 UTC`, `scheduled` in `src/index.ts`) deletes expired
 events, templates past `FP_RETENTION_SECS`, check-in events past
-`CHECKIN_RETENTION_SECS`, and trims the tombstones.
+`CHECKIN_RETENTION_SECS`, and trims the tombstones. Its trigger is commented
+out in `wrangler.jsonc` (the Workers Free plan allows 5 cron triggers per
+account); uncomment `triggers` to enable it.
 
 The D1 block is commented out in `wrangler.jsonc`; `bun run cf:d1config` writes a
 gitignored `wrangler.d1.jsonc` with it enabled. To deploy on D1, uncomment the
