@@ -26,8 +26,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "biome check",
-    "typecheck": "tsc --noEmit",
-    "deploy": "wrangler pages deploy --branch main"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -59,7 +58,6 @@
     "@vitejs/plugin-react": "^6.1.2",
     "tailwindcss": "^4.3.3",
     "typescript": "catalog:",
-    "vite": "^8.3.4",
-    "wrangler": "catalog:"
+    "vite": "^8.3.4"
   }
 }

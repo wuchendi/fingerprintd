@@ -38,7 +38,7 @@
  */
 
 const BASE = (
-  process.env.BASE ?? 'https://fingerprintd-edge.cdlab.workers.dev'
+  process.env.BASE ?? 'https://fingerprintd.cdlab.workers.dev'
 ).replace(/\/$/, '')
 const API_KEY = process.env.FP_API_KEY ?? ''
 const ADMIN_KEY = process.env.FP_ADMIN_KEY ?? ''

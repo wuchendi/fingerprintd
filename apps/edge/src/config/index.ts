@@ -57,8 +57,8 @@ export interface Env {
   /** Template retention window in seconds: templates whose `last_seen` is older than
    *  this are purged by the scheduled cron. `0`/unset ⇒ retention disabled. */
   FP_RETENTION_SECS?: string
-  /** Comma-separated allowed CORS origins for the browser playground, e.g.
-   *  `https://fingerprintd.pages.dev`. `*` allows any origin.
+  /** Comma-separated allowed CORS origins for browsers on other sites, e.g.
+   *  `https://app.example.com`. `*` allows any origin.
    *  Empty/unset ⇒ no CORS headers (same-origin / server-to-server only). */
   FP_CORS_ORIGINS?: string
 }

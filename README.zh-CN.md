@@ -119,12 +119,12 @@ const result = await run({
 - **Playground** —— [`apps/web`](apps/web/README.md) 在浏览器里跑通整个流程,可视化客户端**发送**了什么、服务端**判定**了什么。
 - **签到风控判定** —— edge Worker 还提供 `POST /checkin/assess`(`{ account_id, action, request_id }`,`Authorization: Bearer <FP_API_KEY>`)。它补上 fingerprintd 刻意不持有的账号/设备/IP/时序聚合,把一条已存储的 identify 事件转成用于每日签到反刷的 allow / challenge / deny 决策;由 [playground](apps/web/README.md) 演示。
 
-CI 通过手动的 `deploy-edge` / `deploy-web` workflow 部署。要**从本机**部署(从源码重建 WASM → 构建 → 推送到 Cloudflare),用 `bun run deploy:cf [edge|web|all]`([`scripts/deploy-cf.sh`](scripts/deploy-cf.sh)):
+edge Worker 与 playground 作为同一个 Cloudflare Worker(`fingerprintd`)发布:Worker 以静态资源形式托管构建好的 playground,与 API 同源。CI 通过手动的 `deploy` workflow 部署。要**从本机**部署(从源码重建 WASM → 构建 → 推送到 Cloudflare),用 `bun run deploy:cf`([`scripts/deploy-cf.sh`](scripts/deploy-cf.sh)):
 
 ```bash
-DRY_RUN=1 bun run deploy:cf edge   # 构建 + wrangler dry-run,无需账号
-bun run deploy:cf all              # 真正部署(需 wrangler login 或 CLOUDFLARE_API_TOKEN)
-RUN_MIGRATIONS=1 bun run deploy:cf edge   # 先执行数据库迁移
+DRY_RUN=1 bun run deploy:cf        # 构建 + wrangler dry-run,无需账号
+bun run deploy:cf                  # 真正部署(需 wrangler login 或 CLOUDFLARE_API_TOKEN)
+RUN_MIGRATIONS=1 bun run deploy:cf # 先执行数据库迁移
 ```
 
 Worker 运行时 secret 单独用 `wrangler secret put` 管理:`FP_SALT_SECRET`(必需)、默认 libSQL 数据库所需的 `LIBSQL_URL` / `LIBSQL_AUTH_TOKEN`,以及可选的 `FP_API_KEY` / `FP_ADMIN_KEY`。设置 `DB_TYPE=d1` 则改用 D1。完整配置与部署步骤见 [`apps/edge/README.md`](apps/edge/README.md#deploy)。

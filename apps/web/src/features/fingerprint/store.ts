@@ -17,7 +17,8 @@ interface FingerprintState {
 }
 
 export const useFingerprintStore = create<FingerprintState>((set, get) => ({
-  baseUrl: 'https://fingerprintd-edge.cdlab.workers.dev',
+  // The Worker serves this app and the API from one origin.
+  baseUrl: window.location.origin,
   accountId: 'user-123',
   status: 'idle',
 

@@ -62,7 +62,6 @@
         "tailwindcss": "^4.3.3",
         "typescript": "catalog:",
         "vite": "^8.3.4",
-        "wrangler": "catalog:",
       },
     },
     "packages/client": {

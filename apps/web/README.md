@@ -52,32 +52,23 @@ To skip the nsl proxy: `bun x vite`.
 
 ## Deploy
 
-Ships to **Cloudflare Pages** (direct upload, `wrangler.jsonc`, no server code)
-as the `fingerprintd` project — `fingerprintd.pages.dev`. SPA history fallback
-is handled by `public/_redirects` (`/* /index.html 200`), copied into `dist/`
-at build time.
+There is no separate deployment: the edge Worker (`fingerprintd`, see
+[`apps/edge/README.md`](../edge/README.md#deploy)) serves `dist/` as static
+assets on the same origin as the API, with `index.html` as the SPA fallback.
+From the repo root:
 
 ```bash
-bun run --filter @cdlab/fingerprintd build   # SDK dist (gitignored)
-bun run build                                 # SPA -> ./dist
-bun run deploy                                # wrangler pages deploy --branch main
+bun run deploy   # build SDK + this app, then deploy the Worker
 ```
 
-`--branch main` marks the upload as a production deployment. If the Pages
-project's configured production branch is not `main`, change the flag to match.
-
-CI: `.github/workflows/deploy-web.yml` (manual `workflow_dispatch`) does the
-same — install → build SDK → build web → `wrangler pages deploy`. It reuses the
-`CLOUDFLARE_ACCOUNT_ID` secret shared with `deploy-edge.yml`; the
-`CLOUDFLARE_API_TOKEN` must additionally carry **Cloudflare Pages:Edit**
-(the edge token's `Workers Scripts:Edit` alone cannot deploy to Pages).
+CI: `.github/workflows/deploy.yml` (manual `workflow_dispatch`) does the same.
 
 ## Notes
 
-- **Cross-origin.** The playground fetches `/challenge` and `/identify` on the
-  server origin you enter, so that server must allow this app's origin via CORS.
-  The edge Worker does this via `FP_CORS_ORIGINS` (see
-  [`apps/edge/README.md`](../edge/README.md)). Point at another server and it
-  must set its own CORS.
+- **Server URL.** The server base URL defaults to the page's own origin — the
+  deployed Worker serves both. In `bun run dev`, enter the edge dev server's
+  URL instead. Any server on another origin must allow this app's origin via
+  CORS (the edge Worker: `FP_CORS_ORIGINS`, see
+  [`apps/edge/README.md`](../edge/README.md)).
 - **Real-browser only.** Canvas/audio/WebGL collection needs a real browser;
   there is no headless in-repo e2e for this app.

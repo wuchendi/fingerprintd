@@ -4,19 +4,39 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // fingerprintd edge Worker. Runs with no account locally (`wrangler dev
-  // --local`, the miniflare-backed vitest suite) and deploys to Cloudflare via
-  // `.github/workflows/deploy-edge.yml` (or `bun run deploy`). The database is
+  // fingerprintd Worker: the challenge/identify API plus the apps/web
+  // playground (served as static assets), one deployment. Runs with no account
+  // locally (`wrangler dev --local`, the miniflare-backed vitest suite) and
+  // deploys to Cloudflare via `.github/workflows/deploy.yml` (or `bun run
+  // deploy` from the repo root, which builds the playground first). The database is
   // a libSQL server (e.g. Turso) by default, or D1 with `DB_TYPE=d1`; SQLite-
   // backed Durable Objects + D1 are on the Workers free plan. Worker Secrets,
   // never committed — set via `wrangler secret put` or the deploy workflow's
   // sync: FP_SALT_SECRET (required; the Worker throws without it),
   // LIBSQL_URL, LIBSQL_AUTH_TOKEN, plus the optional FP_ADMIN_KEY (erasure) and
   // FP_API_KEY (events API + check-in).
-  "name": "fingerprintd-edge",
+  "name": "fingerprintd",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-07",
   "compatibility_flags": ["nodejs_compat"],
+  // The built playground SPA (apps/web/dist) is served from the same origin as
+  // the API, so it calls /challenge and /identify without CORS. Only the API
+  // paths below run the Worker; every other path is a static asset, and an
+  // unmatched one falls back to index.html. Add a path here when adding a route.
+  // Build apps/web first: `deploy` and `deploy:dry` fail without the
+  // directory (the vitest suites do not need it).
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/health",
+      "/challenge",
+      "/identify",
+      "/checkin/*",
+      "/events/*",
+      "/visitor/*"
+    ]
+  },
   // Keep vars set in the dashboard across deploys instead of overwriting them
   // with the [vars] below.
   "keep_vars": true,
@@ -29,9 +49,10 @@
     // always; set to "1" to let them lower confidence (off until the false-positive
     // rate on real traffic is known — privacy tooling trips the same probes).
     "FP_INTEGRITY_PENALTY_ENABLED": "0",
-    // Allowed browser CORS origins (comma-separated; `*` = any). Set to the web
-    // playground deployment so it can call /challenge and /identify cross-origin.
-    "FP_CORS_ORIGINS": "https://fingerprintd.pages.dev",
+    // Allowed browser CORS origins (comma-separated; `*` = any). Empty: the
+    // bundled playground is same-origin; list third-party sites that run the
+    // SDK against this Worker from the browser.
+    "FP_CORS_ORIGINS": "",
     // Check-in retention is off by default: set CHECKIN_RETENTION_SECS > 0 to have
     // the scheduled cron purge old check-in events from the database.
     "CHECKIN_RETENTION_SECS": "0",
