@@ -67,13 +67,13 @@ flowchart LR
 
 两种部署提供同一套线上契约。
 
-| 端点                     | 方法   | 用途                                                       |
-| ------------------------ | ------ | ---------------------------------------------------------- |
-| `/health`                | GET    | 存活探测(`200 OK`)                                        |
-| `/challenge`             | GET    | 签发一次性 nonce challenge                                 |
-| `/identify`              | POST   | 计算 `visitor_id` + `confidence` + `decision`              |
-| `/events/{request_id}`   | GET    | 权威的 identify 结果,服务端到服务端(需 api-key 门控)    |
-| `/visitor/{visitor_id}`  | DELETE | GDPR 擦除 —— 删除一个 visitor 及其事件(需 admin-key 门控) |
+| 端点                    | 方法   | 用途                                                      |
+| ----------------------- | ------ | --------------------------------------------------------- |
+| `/health`               | GET    | 存活探测(`200 OK`)                                        |
+| `/challenge`            | GET    | 签发一次性 nonce challenge                                |
+| `/identify`             | POST   | 计算 `visitor_id` + `confidence` + `decision`             |
+| `/events/{request_id}`  | GET    | 权威的 identify 结果,服务端到服务端(需 api-key 门控)      |
+| `/visitor/{visitor_id}` | DELETE | GDPR 擦除 —— 删除一个 visitor 及其事件(需 admin-key 门控) |
 
 `/identify` 返回 `{ request_id, visitor_id, confidence, decision, is_new_device, collision_risk, signals }`;`GET /events/{request_id}` 返回同一个 body。`decision` 为 `match` / `review` / `new_device` 之一;`confidence` 是 `[0,1]` 区间的**判定置信度**,不是身份可信度(一台全新设备可以打分很高却毫无历史 —— 请以 `is_new_device` / `decision` 为准来判断可信度)。请求体是封闭的 snake_case schema:任意层级出现未知键都返回 `400`。完整线上格式见 [`packages/client/README.md`](packages/client/README.md)。
 
@@ -133,26 +133,26 @@ Worker 运行时 secret 单独用 `wrangler secret put` 管理:`FP_SALT_SECRET`(
 
 原生服务按优先级从低到高配置:内置默认 → `fingerprintd.toml` → `FP_` 前缀的环境变量。请求时间戳窗口始终强制校验。
 
-| 键                               | 环境变量                            | 默认值           | 含义                                                                        |
-| -------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------------------------------- |
-| `bind_addr`                      | `FP_BIND_ADDR`                      | `127.0.0.1:8080` | 监听地址。                                                                  |
-| `nonce_ttl_secs`                 | `FP_NONCE_TTL_SECS`                 | `30`             | 一次性 nonce 时效,作为 `expires_in` 通告。                                 |
-| `nonce_max_live`                 | `FP_NONCE_MAX_LIVE`                 | `1000000`        | 存活(已签发、未消耗)nonce 的上限;超限时淘汰最早的。                     |
-| `trust_edge_headers`             | `FP_TRUST_EDGE_HEADERS`             | `false`          | 是否信任边缘注入的被动信号头(JA4/IP)。**Fail-closed:**仅在可信边缘之后开启;可直连的源站必须关闭。 |
+| 键                               | 环境变量                            | 默认值           | 含义                                                                                                                                                                |
+| -------------------------------- | ----------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bind_addr`                      | `FP_BIND_ADDR`                      | `127.0.0.1:8080` | 监听地址。                                                                                                                                                          |
+| `nonce_ttl_secs`                 | `FP_NONCE_TTL_SECS`                 | `30`             | 一次性 nonce 时效,作为 `expires_in` 通告。                                                                                                                          |
+| `nonce_max_live`                 | `FP_NONCE_MAX_LIVE`                 | `1000000`        | 存活(已签发、未消耗)nonce 的上限;超限时淘汰最早的。                                                                                                                 |
+| `trust_edge_headers`             | `FP_TRUST_EDGE_HEADERS`             | `false`          | 是否信任边缘注入的被动信号头(JA4/IP)。**Fail-closed:**仅在可信边缘之后开启;可直连的源站必须关闭。                                                                   |
 | `integrity_penalty_enabled`      | `FP_INTEGRITY_PENALTY_ENABLED`      | `false`          | 是否允许 `noise` 的客户端完整性判定下调 `/identify` 置信度。判定始终以 `signals.client_integrity` 展示;在拿到真实流量误报率之前保持关闭(隐私工具会触发同样的探针)。 |
-| `ts_skew_secs`                   | `FP_TS_SKEW_SECS`                   | `30`             | 请求 `ts` 允许的时钟偏移;超出则 `/identify` 返回 `401`。                   |
-| `fuzzy_max_records`              | `FP_FUZZY_MAX_RECORDS`              | `1000000`        | 最大不同 visitor 数;超上限时淘汰最早见到的。                              |
-| `fuzzy_record_ttl_secs`          | `FP_FUZZY_RECORD_TTL_SECS`          | `0`              | 淘汰在此窗口内未再见到的记录。`0` 关闭 TTL。                               |
-| `fuzzy_max_block`                | `FP_FUZZY_MAX_BLOCK`                | `1024`           | blocking 索引每块的 visitor 上限;超限的插入被丢弃。                       |
-| `fuzzy_max_frequency_values`     | `FP_FUZZY_MAX_FREQUENCY_VALUES`     | `1000000`        | 跟踪的不同频率值(`u_i`)上限;超限的新值被丢弃。                          |
-| `fuzzy_max_agreement_components` | `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` | `1024`           | 跟踪的不同一致性组件(`m_i`)上限;超限的新组件名被丢弃。                  |
-| `admin_key`                      | `FP_ADMIN_KEY`                      | *(未设置)*       | 门控 `DELETE /visitor/{visitor_id}` 的 Bearer 密钥。未设置则擦除接口禁用。 |
-| `api_key`                        | `FP_API_KEY`                        | *(未设置)*       | 门控 `GET /events/{request_id}` 的 Bearer 密钥。未设置则事件接口禁用。     |
-| `event_ttl_secs`                 | `FP_EVENT_TTL_SECS`                 | `3600`           | 已存储 identify 事件的时效。                                               |
-| `event_max`                      | `FP_EVENT_MAX`                      | `100000`         | 已存储 identify 事件的上限;超限时淘汰最早的。                             |
-| `retention_secs`                 | `FP_RETENTION_SECS`                 | `0`              | 清除超过此时长(秒)未再见到的 visitor 记录。`0` 关闭清扫。                 |
-| `request_timeout_secs`           | `FP_REQUEST_TIMEOUT_SECS`           | `10`             | 单请求截止时间;超时返回 `408`。                                            |
-| `max_concurrent_requests`        | `FP_MAX_CONCURRENT_REQUESTS`        | `1024`           | 全局并发处理请求上限;其余请求排队等待。                                    |
+| `ts_skew_secs`                   | `FP_TS_SKEW_SECS`                   | `30`             | 请求 `ts` 允许的时钟偏移;超出则 `/identify` 返回 `401`。                                                                                                            |
+| `fuzzy_max_records`              | `FP_FUZZY_MAX_RECORDS`              | `1000000`        | 最大不同 visitor 数;超上限时淘汰最早见到的。                                                                                                                        |
+| `fuzzy_record_ttl_secs`          | `FP_FUZZY_RECORD_TTL_SECS`          | `0`              | 淘汰在此窗口内未再见到的记录。`0` 关闭 TTL。                                                                                                                        |
+| `fuzzy_max_block`                | `FP_FUZZY_MAX_BLOCK`                | `1024`           | blocking 索引每块的 visitor 上限;超限的插入被丢弃。                                                                                                                 |
+| `fuzzy_max_frequency_values`     | `FP_FUZZY_MAX_FREQUENCY_VALUES`     | `1000000`        | 跟踪的不同频率值(`u_i`)上限;超限的新值被丢弃。                                                                                                                      |
+| `fuzzy_max_agreement_components` | `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` | `1024`           | 跟踪的不同一致性组件(`m_i`)上限;超限的新组件名被丢弃。                                                                                                              |
+| `admin_key`                      | `FP_ADMIN_KEY`                      | _(未设置)_       | 门控 `DELETE /visitor/{visitor_id}` 的 Bearer 密钥。未设置则擦除接口禁用。                                                                                          |
+| `api_key`                        | `FP_API_KEY`                        | _(未设置)_       | 门控 `GET /events/{request_id}` 的 Bearer 密钥。未设置则事件接口禁用。                                                                                              |
+| `event_ttl_secs`                 | `FP_EVENT_TTL_SECS`                 | `3600`           | 已存储 identify 事件的时效。                                                                                                                                        |
+| `event_max`                      | `FP_EVENT_MAX`                      | `100000`         | 已存储 identify 事件的上限;超限时淘汰最早的。                                                                                                                       |
+| `retention_secs`                 | `FP_RETENTION_SECS`                 | `0`              | 清除超过此时长(秒)未再见到的 visitor 记录。`0` 关闭清扫。                                                                                                           |
+| `request_timeout_secs`           | `FP_REQUEST_TIMEOUT_SECS`           | `10`             | 单请求截止时间;超时返回 `408`。                                                                                                                                     |
+| `max_concurrent_requests`        | `FP_MAX_CONCURRENT_REQUESTS`        | `1024`           | 全局并发处理请求上限;其余请求排队等待。                                                                                                                             |
 
 `admin_key` / `api_key` 两项控制**默认 fail-closed 且关闭** —— 在设置密钥之前对应接口返回 `404`,缺失或错误的 bearer 返回 `401`。内存容量上限宽松且 fail-safe:小负载表现得与无界存储完全一致,每一次淘汰或丢弃都会被计数,绝不静默。这些设置只配置原生服务;edge Worker 有自己的配置(见 [`apps/edge/README.md`](apps/edge/README.md#configuration))。
 
@@ -213,10 +213,10 @@ deny-warnings 策略写在 `[workspace.lints]` 里;CI 跑同样的门(`.github/w
 
 对外发布两个产物,同名、同版本号(Cargo workspace 版本与 `packages/client/package.json` 必须一致;当前为 `0.1.0`):
 
-| 产物 | 仓库 | 安装 |
-|---|---|---|
+| 产物       | 仓库                      | 安装                        |
+| ---------- | ------------------------- | --------------------------- |
 | 浏览器 SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
-| 计算引擎 | crates.io `fingerprintd` | `cargo add fingerprintd` |
+| 计算引擎   | crates.io `fingerprintd`  | `cargo add fingerprintd`    |
 
 原生服务(`crates/fingerprintd`,crate 名 `fingerprintd-server`)是可部署程序而非库,不发布,在仓库内用 `cargo run --bin fingerprintd` 运行。`crates/fp-wasm` 同样不发布:它是 wasm-pack 构建产物,打包进边缘 Worker。
 

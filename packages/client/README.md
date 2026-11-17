@@ -63,11 +63,11 @@ every level with `400`.
 
 ```jsonc
 {
-  "nonce": "…",                 // from /challenge
-  "ts": 1792329908414,          // Unix ms, always sent
+  "nonce": "…", // from /challenge
+  "ts": 1792329908414, // Unix ms, always sent
   "components": { "platform": "Win32", "cpu_cores": 8, "fonts": ["Arial"] },
   "user_agent": "Mozilla/5.0 …", // optional
-  "botd": { "bot": false },      // optional; { "bot": true, "kind": "headless_chrome" }
+  "botd": { "bot": false }, // optional; { "bot": true, "kind": "headless_chrome" }
   "integrity": { "canvas": "ok", "webgl": "ok", "audio": "ok", "rect": "ok" } // optional
 }
 ```
@@ -79,16 +79,16 @@ every level with `400`.
   "request_id": "…",
   "visitor_id": "…",
   "confidence": 0.87,
-  "decision": "match",          // "match" | "review" | "new_device"
+  "decision": "match", // "match" | "review" | "new_device"
   "is_new_device": false,
   "collision_risk": false,
   "signals": {
     "ua_tls_consistent": true,
-    "ip_risk": "low",                   // "low" | "medium" | "high"
-    "client_integrity": "ok",           // "ok" | "noise" | "unavailable"
-    "persona_coherence": "consistent",  // "consistent" | "mismatch" | "unknown"
-    "new_device_velocity": "low",       // "low" | "medium" | "high"
-    "automation": "not_detected",       // "detected" | "not_detected" | "unknown"
+    "ip_risk": "low", // "low" | "medium" | "high"
+    "client_integrity": "ok", // "ok" | "noise" | "unavailable"
+    "persona_coherence": "consistent", // "consistent" | "mismatch" | "unknown"
+    "new_device_velocity": "low", // "low" | "medium" | "high"
+    "automation": "not_detected", // "detected" | "not_detected" | "unknown"
     "template_jump": false
   }
 }
@@ -103,26 +103,26 @@ every level with `400`.
 `crates/fp-core/src/fuzzy/component.rs`). The adapter maps FingerprintJS output
 onto it and drops every other FingerprintJS component.
 
-| Key | FingerprintJS source | Kind |
-| --- | --- | --- |
-| `webgl` | `webGlBasics` (`vendor\|renderer`) | Category |
-| `webgl_extensions` | `webGlExtensions` (digest) | Category |
-| `platform` | `platform` | Category |
-| `timezone` | `timezone` | Category |
-| `languages` | `languages` (joined) | Category |
-| `audio` | `audio` | Category |
-| `canvas` | `canvas` (digest) | Category |
-| `cpu_cores` | `hardwareConcurrency` | Numeric |
-| `device_memory` | `deviceMemory` | Numeric |
-| `screen` | `screenResolution` (`WxH`) | Category |
-| `fonts` | `fonts` | Set |
-| `plugins` | `plugins` (names) | Set |
-| `font_preferences` | `fontPreferences` | Category |
-| `screen_frame` | `screenFrame` | Category |
-| `math` | `math` | Category |
-| `touch_support` | `touchSupport` | Category |
-| `dom_blockers` | `domBlockers` | Category |
-| `user_agent_data` | `userAgentData` | Category |
+| Key                | FingerprintJS source               | Kind     |
+| ------------------ | ---------------------------------- | -------- |
+| `webgl`            | `webGlBasics` (`vendor\|renderer`) | Category |
+| `webgl_extensions` | `webGlExtensions` (digest)         | Category |
+| `platform`         | `platform`                         | Category |
+| `timezone`         | `timezone`                         | Category |
+| `languages`        | `languages` (joined)               | Category |
+| `audio`            | `audio`                            | Category |
+| `canvas`           | `canvas` (digest)                  | Category |
+| `cpu_cores`        | `hardwareConcurrency`              | Numeric  |
+| `device_memory`    | `deviceMemory`                     | Numeric  |
+| `screen`           | `screenResolution` (`WxH`)         | Category |
+| `fonts`            | `fonts`                            | Set      |
+| `plugins`          | `plugins` (names)                  | Set      |
+| `font_preferences` | `fontPreferences`                  | Category |
+| `screen_frame`     | `screenFrame`                      | Category |
+| `math`             | `math`                             | Category |
+| `touch_support`    | `touchSupport`                     | Category |
+| `dom_blockers`     | `domBlockers`                      | Category |
+| `user_agent_data`  | `userAgentData`                    | Category |
 
 Numeric values are JSON numbers, Sets are string arrays, Categories are a
 string, number or boolean (object/array values are digested). `user_agent` is

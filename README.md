@@ -67,13 +67,13 @@ The `/identify` response the browser receives is display-only — anything runni
 
 Both deployments serve the same wire contract.
 
-| Endpoint                 | Method | Purpose                                                          |
-| ------------------------ | ------ | ---------------------------------------------------------------- |
-| `/health`                | GET    | Liveness (`200 OK`)                                              |
-| `/challenge`             | GET    | Issue a one-time nonce challenge                                 |
-| `/identify`              | POST   | Compute `visitor_id` + `confidence` + `decision`                 |
-| `/events/{request_id}`   | GET    | Authoritative identify result, server-to-server (api-key gated)  |
-| `/visitor/{visitor_id}`  | DELETE | GDPR erasure — remove a visitor and its events (admin-key gated) |
+| Endpoint                | Method | Purpose                                                          |
+| ----------------------- | ------ | ---------------------------------------------------------------- |
+| `/health`               | GET    | Liveness (`200 OK`)                                              |
+| `/challenge`            | GET    | Issue a one-time nonce challenge                                 |
+| `/identify`             | POST   | Compute `visitor_id` + `confidence` + `decision`                 |
+| `/events/{request_id}`  | GET    | Authoritative identify result, server-to-server (api-key gated)  |
+| `/visitor/{visitor_id}` | DELETE | GDPR erasure — remove a visitor and its events (admin-key gated) |
 
 `/identify` returns `{ request_id, visitor_id, confidence, decision, is_new_device, collision_risk, signals }`; `GET /events/{request_id}` returns the same body. `decision` is one of `match` / `review` / `new_device`; `confidence` is a decision confidence in `[0,1]`, not identity trust (a brand-new device can score high yet be entirely unestablished — key trust off `is_new_device` / `decision`). Request bodies are a closed snake_case schema: an unknown key at any level is a `400`. The full wire format is in [`packages/client/README.md`](packages/client/README.md).
 
@@ -133,26 +133,26 @@ Runtime Worker secrets are managed separately with `wrangler secret put`: `FP_SA
 
 The native server is configured lowest → highest priority: built-in defaults → `fingerprintd.toml` → `FP_`-prefixed environment variables. The request timestamp window is always enforced.
 
-| Key                              | Env var                             | Default          | Meaning                                                                     |
-| -------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------------------------------- |
-| `bind_addr`                      | `FP_BIND_ADDR`                      | `127.0.0.1:8080` | Listen address.                                                             |
-| `nonce_ttl_secs`                 | `FP_NONCE_TTL_SECS`                 | `30`             | One-time nonce lifetime, advertised as `expires_in`.                        |
-| `nonce_max_live`                 | `FP_NONCE_MAX_LIVE`                 | `1000000`        | Cap on live (issued, unconsumed) nonces; the oldest is evicted over cap.    |
-| `trust_edge_headers`             | `FP_TRUST_EDGE_HEADERS`             | `false`          | Trust edge-injected passive-signal headers (JA4/IP). **Fail-closed:** enable only behind a trusted edge; a directly-reachable origin must leave it off. |
+| Key                              | Env var                             | Default          | Meaning                                                                                                                                                                                                                           |
+| -------------------------------- | ----------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bind_addr`                      | `FP_BIND_ADDR`                      | `127.0.0.1:8080` | Listen address.                                                                                                                                                                                                                   |
+| `nonce_ttl_secs`                 | `FP_NONCE_TTL_SECS`                 | `30`             | One-time nonce lifetime, advertised as `expires_in`.                                                                                                                                                                              |
+| `nonce_max_live`                 | `FP_NONCE_MAX_LIVE`                 | `1000000`        | Cap on live (issued, unconsumed) nonces; the oldest is evicted over cap.                                                                                                                                                          |
+| `trust_edge_headers`             | `FP_TRUST_EDGE_HEADERS`             | `false`          | Trust edge-injected passive-signal headers (JA4/IP). **Fail-closed:** enable only behind a trusted edge; a directly-reachable origin must leave it off.                                                                           |
 | `integrity_penalty_enabled`      | `FP_INTEGRITY_PENALTY_ENABLED`      | `false`          | Let a `noise` client-integrity verdict lower `/identify` confidence. The verdict is always surfaced as `signals.client_integrity`; off until a real-traffic false-positive rate is known (privacy tooling trips the same probes). |
-| `ts_skew_secs`                   | `FP_TS_SKEW_SECS`                   | `30`             | Allowed clock skew of the request `ts`; outside it `/identify` is a `401`.  |
-| `fuzzy_max_records`              | `FP_FUZZY_MAX_RECORDS`              | `1000000`        | Max distinct visitors; oldest-seen is evicted over cap.                     |
-| `fuzzy_record_ttl_secs`          | `FP_FUZZY_RECORD_TTL_SECS`          | `0`              | Evict records not seen within this window. `0` disables the TTL.            |
-| `fuzzy_max_block`                | `FP_FUZZY_MAX_BLOCK`                | `1024`           | Per-block visitor cap for the blocking index; over-cap inserts are dropped. |
-| `fuzzy_max_frequency_values`     | `FP_FUZZY_MAX_FREQUENCY_VALUES`     | `1000000`        | Cap on distinct tracked frequency values (`u_i`); new values over cap drop. |
-| `fuzzy_max_agreement_components` | `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` | `1024`           | Cap on distinct tracked agreement components (`m_i`); new names over cap drop. |
-| `admin_key`                      | `FP_ADMIN_KEY`                      | *(unset)*        | Bearer key gating `DELETE /visitor/{visitor_id}`. Erasure is disabled if unset. |
-| `api_key`                        | `FP_API_KEY`                        | *(unset)*        | Bearer key gating `GET /events/{request_id}`. Events are disabled if unset. |
-| `event_ttl_secs`                 | `FP_EVENT_TTL_SECS`                 | `3600`           | Lifetime of a stored identify event.                                        |
-| `event_max`                      | `FP_EVENT_MAX`                      | `100000`         | Cap on stored identify events; the oldest is evicted over cap.              |
-| `retention_secs`                 | `FP_RETENTION_SECS`                 | `0`              | Purge visitor records not seen for this long (seconds). `0` disables the sweep. |
-| `request_timeout_secs`           | `FP_REQUEST_TIMEOUT_SECS`           | `10`             | Per-request deadline; past it the request gets `408`.                       |
-| `max_concurrent_requests`        | `FP_MAX_CONCURRENT_REQUESTS`        | `1024`           | Global cap on concurrently processed requests; further requests wait.       |
+| `ts_skew_secs`                   | `FP_TS_SKEW_SECS`                   | `30`             | Allowed clock skew of the request `ts`; outside it `/identify` is a `401`.                                                                                                                                                        |
+| `fuzzy_max_records`              | `FP_FUZZY_MAX_RECORDS`              | `1000000`        | Max distinct visitors; oldest-seen is evicted over cap.                                                                                                                                                                           |
+| `fuzzy_record_ttl_secs`          | `FP_FUZZY_RECORD_TTL_SECS`          | `0`              | Evict records not seen within this window. `0` disables the TTL.                                                                                                                                                                  |
+| `fuzzy_max_block`                | `FP_FUZZY_MAX_BLOCK`                | `1024`           | Per-block visitor cap for the blocking index; over-cap inserts are dropped.                                                                                                                                                       |
+| `fuzzy_max_frequency_values`     | `FP_FUZZY_MAX_FREQUENCY_VALUES`     | `1000000`        | Cap on distinct tracked frequency values (`u_i`); new values over cap drop.                                                                                                                                                       |
+| `fuzzy_max_agreement_components` | `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` | `1024`           | Cap on distinct tracked agreement components (`m_i`); new names over cap drop.                                                                                                                                                    |
+| `admin_key`                      | `FP_ADMIN_KEY`                      | _(unset)_        | Bearer key gating `DELETE /visitor/{visitor_id}`. Erasure is disabled if unset.                                                                                                                                                   |
+| `api_key`                        | `FP_API_KEY`                        | _(unset)_        | Bearer key gating `GET /events/{request_id}`. Events are disabled if unset.                                                                                                                                                       |
+| `event_ttl_secs`                 | `FP_EVENT_TTL_SECS`                 | `3600`           | Lifetime of a stored identify event.                                                                                                                                                                                              |
+| `event_max`                      | `FP_EVENT_MAX`                      | `100000`         | Cap on stored identify events; the oldest is evicted over cap.                                                                                                                                                                    |
+| `retention_secs`                 | `FP_RETENTION_SECS`                 | `0`              | Purge visitor records not seen for this long (seconds). `0` disables the sweep.                                                                                                                                                   |
+| `request_timeout_secs`           | `FP_REQUEST_TIMEOUT_SECS`           | `10`             | Per-request deadline; past it the request gets `408`.                                                                                                                                                                             |
+| `max_concurrent_requests`        | `FP_MAX_CONCURRENT_REQUESTS`        | `1024`           | Global cap on concurrently processed requests; further requests wait.                                                                                                                                                             |
 
 The `admin_key` / `api_key` controls are **fail-closed and off by default** — each endpoint answers `404` until its key is set, and `401` for a missing or wrong bearer. The in-memory capacity bounds are generous and fail-safe: a small workload behaves exactly like an unbounded store, and every eviction or drop is counted, never silent. These settings configure the native server only; the edge Worker has its own configuration (see [`apps/edge/README.md`](apps/edge/README.md#configuration)).
 
@@ -213,10 +213,10 @@ Per-component tooling:
 
 Two artifacts are published under one name, from one version (the Cargo workspace version and `packages/client/package.json` must agree; currently `0.1.0`):
 
-| Artifact | Registry | Install |
-|---|---|---|
-| Browser SDK | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
-| Compute engine | crates.io `fingerprintd` | `cargo add fingerprintd` |
+| Artifact       | Registry                  | Install                     |
+| -------------- | ------------------------- | --------------------------- |
+| Browser SDK    | npm `@cdlab/fingerprintd` | `npm i @cdlab/fingerprintd` |
+| Compute engine | crates.io `fingerprintd`  | `cargo add fingerprintd`    |
 
 The native server (`crates/fingerprintd`, crate `fingerprintd-server`) is a deployable, not a library, and is not published; run it from the repo with `cargo run --bin fingerprintd`. `crates/fp-wasm` is not published either: it is a wasm-pack build output bundled into the edge Worker.
 

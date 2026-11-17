@@ -110,14 +110,14 @@ identify → assess flow.
 
 ### Status matrix
 
-| Status | When |
-| --- | --- |
-| `400` | unknown key or wrongly-typed value anywhere in the body; malformed JSON |
-| `401` | `/identify`: bad, expired or reused nonce, or `ts` outside the window. Key-gated routes: missing or wrong bearer |
-| `404` | `/events`, `/checkin/assess`: `FP_API_KEY` unset (route disabled), or unknown/expired `request_id`. `/visitor`: `FP_ADMIN_KEY` unset (route disabled) |
-| `409` | `/checkin/assess`: the `request_id` was already assessed for a different `account_id` (nothing is scored or recorded) |
-| `415` | `POST` body not `application/json` (or a `+json` type) |
-| `429` | per-IP rate limit exceeded |
+| Status | When                                                                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`  | unknown key or wrongly-typed value anywhere in the body; malformed JSON                                                                               |
+| `401`  | `/identify`: bad, expired or reused nonce, or `ts` outside the window. Key-gated routes: missing or wrong bearer                                      |
+| `404`  | `/events`, `/checkin/assess`: `FP_API_KEY` unset (route disabled), or unknown/expired `request_id`. `/visitor`: `FP_ADMIN_KEY` unset (route disabled) |
+| `409`  | `/checkin/assess`: the `request_id` was already assessed for a different `account_id` (nothing is scored or recorded)                                 |
+| `415`  | `POST` body not `application/json` (or a `+json` type)                                                                                                |
+| `429`  | per-IP rate limit exceeded                                                                                                                            |
 
 ## Configuration
 
@@ -125,26 +125,26 @@ Resolved in `src/config/index.ts`. `FP_SALT_SECRET`, the database configuration
 and all four bindings are required — a missing one throws on the first request
 instead of running degraded. Secrets are read at runtime and never embedded.
 
-| Name | Kind | Role | Default |
-| --- | --- | --- | --- |
-| `FP_SALT_SECRET` | secret | seeds the deterministic salt + MinHash family; **required** | — |
-| `FP_API_KEY` | secret | bearer for `GET /events` and `POST /checkin/assess`; unset ⇒ both disabled and no events stored | off |
-| `FP_ADMIN_KEY` | secret | bearer for `DELETE /visitor/{id}`; unset ⇒ disabled | off |
-| `FP_EVENT_TTL_SECS` | var | lifetime of a stored identify event | 3600 |
-| `FP_TS_SKEW_SECS` | var | allowed clock skew of the request `ts` (always enforced) | 30 |
-| `FP_NONCE_TTL_SECS` | var | nonce lifetime, advertised as `expires_in` | 30 |
-| `FP_INTEGRITY_PENALTY_ENABLED` | var | `"1"`/`"true"`/`"yes"` lets a `noise` client-integrity verdict lower confidence (always surfaced) | off |
-| `FP_RETENTION_SECS` | var | purge templates not seen for this long; `0` ⇒ off | 0 (`wrangler.jsonc`: 2592000) |
-| `CHECKIN_RETENTION_SECS` | var | purge check-in events older than this; `0` ⇒ off | 0 |
-| `FP_CORS_ORIGINS` | var | comma-separated browser CORS origins (`*` = any); unset ⇒ no CORS headers | off |
-| `DB_TYPE` | var | database driver: `libsql` or `d1` | `libsql` |
-| `LIBSQL_URL` | var/secret | libSQL server URL (e.g. Turso); required for `libsql` | — |
-| `LIBSQL_AUTH_TOKEN` | secret | libSQL auth token; omit for an unauthenticated server | — |
-| `NONCE` | Durable Object | one-time nonce store (atomic check-and-burn + TTL alarm) | — |
-| `VELOCITY` | Durable Object | per-IP distinct new-device counter | — |
-| `RATE_LIMIT` | rate limit | per-IP limit on `POST /identify` + `POST /checkin/assess` | 60 / 60s |
-| `CHALLENGE_RATE_LIMIT` | rate limit | per-IP limit on `GET /challenge`, its own bucket | 120 / 60s |
-| `DB` | D1 | the database; required for `d1` | — |
+| Name                           | Kind           | Role                                                                                              | Default                       |
+| ------------------------------ | -------------- | ------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `FP_SALT_SECRET`               | secret         | seeds the deterministic salt + MinHash family; **required**                                       | —                             |
+| `FP_API_KEY`                   | secret         | bearer for `GET /events` and `POST /checkin/assess`; unset ⇒ both disabled and no events stored   | off                           |
+| `FP_ADMIN_KEY`                 | secret         | bearer for `DELETE /visitor/{id}`; unset ⇒ disabled                                               | off                           |
+| `FP_EVENT_TTL_SECS`            | var            | lifetime of a stored identify event                                                               | 3600                          |
+| `FP_TS_SKEW_SECS`              | var            | allowed clock skew of the request `ts` (always enforced)                                          | 30                            |
+| `FP_NONCE_TTL_SECS`            | var            | nonce lifetime, advertised as `expires_in`                                                        | 30                            |
+| `FP_INTEGRITY_PENALTY_ENABLED` | var            | `"1"`/`"true"`/`"yes"` lets a `noise` client-integrity verdict lower confidence (always surfaced) | off                           |
+| `FP_RETENTION_SECS`            | var            | purge templates not seen for this long; `0` ⇒ off                                                 | 0 (`wrangler.jsonc`: 2592000) |
+| `CHECKIN_RETENTION_SECS`       | var            | purge check-in events older than this; `0` ⇒ off                                                  | 0                             |
+| `FP_CORS_ORIGINS`              | var            | comma-separated browser CORS origins (`*` = any); unset ⇒ no CORS headers                         | off                           |
+| `DB_TYPE`                      | var            | database driver: `libsql` or `d1`                                                                 | `libsql`                      |
+| `LIBSQL_URL`                   | var/secret     | libSQL server URL (e.g. Turso); required for `libsql`                                             | —                             |
+| `LIBSQL_AUTH_TOKEN`            | secret         | libSQL auth token; omit for an unauthenticated server                                             | —                             |
+| `NONCE`                        | Durable Object | one-time nonce store (atomic check-and-burn + TTL alarm)                                          | —                             |
+| `VELOCITY`                     | Durable Object | per-IP distinct new-device counter                                                                | —                             |
+| `RATE_LIMIT`                   | rate limit     | per-IP limit on `POST /identify` + `POST /checkin/assess`                                         | 60 / 60s                      |
+| `CHALLENGE_RATE_LIMIT`         | rate limit     | per-IP limit on `GET /challenge`, its own bucket                                                  | 120 / 60s                     |
+| `DB`                           | D1             | the database; required for `d1`                                                                   | —                             |
 
 Locally, copy `.dev.vars.example` → `.dev.vars` (gitignored); `wrangler dev`
 loads it into the same `env.*` bindings. Remotely, set each secret with

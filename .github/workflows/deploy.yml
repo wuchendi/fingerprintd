@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       run_migrations:
-        description: 'Apply database migrations before deploying (libSQL when the LIBSQL_URL secret is set, else D1)'
+        description: "Apply database migrations before deploying (libSQL when the LIBSQL_URL secret is set, else D1)"
         type: boolean
         default: true
 

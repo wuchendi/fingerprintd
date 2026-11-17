@@ -54,11 +54,11 @@
   而同型号设备之间又相互碰撞。
 - **对抗性弱** —— 隐私浏览器 / 反指纹扩展会主动加噪。
 
-| 问题 | 根因 | 方向 |
-|---|---|---|
-| 可伪造 | 信任客户端上报的值 | 用**客户端无法自报的被动信号**做交叉校验 |
-| 无重放防护 | id 是静态的 | **一次性 nonce** + 强制时间戳窗口 |
-| 不精确 | 精确客户端哈希 + 雪崩 | **服务端模糊匹配 + 多源融合** |
+| 问题       | 根因                  | 方向                                     |
+| ---------- | --------------------- | ---------------------------------------- |
+| 可伪造     | 信任客户端上报的值    | 用**客户端无法自报的被动信号**做交叉校验 |
+| 无重放防护 | id 是静态的           | **一次性 nonce** + 强制时间戳窗口        |
+| 不精确     | 精确客户端哈希 + 雪崩 | **服务端模糊匹配 + 多源融合**            |
 
 判定完全移到服务端;客户端只负责采集 —— 这正是 FingerprintJS Pro / DataDome /
 Akamai 共同采取的路线。
@@ -73,11 +73,11 @@ Akamai 共同采取的路线。
 
 ### 威胁模型
 
-| 对手 | 能力 | 系统目标 |
-|---|---|---|
-| **脚本** | curl / 脚本,无 JS | 必须拒绝(无 nonce / 无采集 / TLS 不一致) |
-| **自动化** | 无头浏览器,运行 JS,伪造 UA/JS 值 | 通过被动信号 + 一致性识别 |
-| **高级** | curl-impersonate / uTLS 伪造 JA3/JA4 + 完整栈,反检测浏览器 | **降低 confidence + 交叉验证**,而非绝对封禁 |
+| 对手       | 能力                                                       | 系统目标                                    |
+| ---------- | ---------------------------------------------------------- | ------------------------------------------- |
+| **脚本**   | curl / 脚本,无 JS                                          | 必须拒绝(无 nonce / 无采集 / TLS 不一致)    |
+| **自动化** | 无头浏览器,运行 JS,伪造 UA/JS 值                           | 通过被动信号 + 一致性识别                   |
+| **高级**   | curl-impersonate / uTLS 伪造 JA3/JA4 + 完整栈,反检测浏览器 | **降低 confidence + 交叉验证**,而非绝对封禁 |
 
 不宣称绝对防御。高级对手可以伪造任何单一信号;价值在于**抬高伪造成本**与
 **多信号一致性检测**,而非不可攻破。
@@ -101,13 +101,13 @@ Akamai 共同采取的路线。
 
 ## 3. 成功指标
 
-| 指标 | 定义 | 目标 |
-|---|---|---|
-| 稳定率 | 两周内同一设备多次访问被解析为同一 `visitor_id` | ≥ 95% |
-| 碰撞率 | 不同设备被解析为同一 `visitor_id` | ≤ 1% |
-| 脚本/自动化检出 | 脚本化 / 伪造请求被标为低置信 | ≥ 90% |
-| 判定 P99 | 提交 → 返回 `visitor_id` | ≤ 50ms |
-| 重放拒绝 | 过期 / 复用的 nonce,或 `ts` 超出窗口,被拒绝 | 100% |
+| 指标            | 定义                                            | 目标   |
+| --------------- | ----------------------------------------------- | ------ |
+| 稳定率          | 两周内同一设备多次访问被解析为同一 `visitor_id` | ≥ 95%  |
+| 碰撞率          | 不同设备被解析为同一 `visitor_id`               | ≤ 1%   |
+| 脚本/自动化检出 | 脚本化 / 伪造请求被标为低置信                   | ≥ 90%  |
+| 判定 P99        | 提交 → 返回 `visitor_id`                        | ≤ 50ms |
+| 重放拒绝        | 过期 / 复用的 nonce,或 `ts` 超出窗口,被拒绝     | 100%   |
 
 > 稳定率/碰撞率目标以**基于标注语料的离线评估**为准 —— 见
 > [fuzzy-matching §10](#10-离线评估)。不得用合成样例报告这两个数字。
@@ -182,10 +182,10 @@ TLS JA3/JA4 **不是**高熵的单设备标识,也**不是**不可伪造的:
 ([`packages/client`](packages/client/README.md),npm `@cdlab/fingerprintd`)是纯
 TypeScript,复用现有的 MIT 库:
 
-| 库 | 许可证 | 复用方式 | 边界 |
-|---|---|---|---|
-| **FingerprintJS**(开源) | MIT | npm 依赖;其原始 `components` 被适配到封闭 schema | 丢弃其客户端 `visitorId` 哈希 |
-| **BotD**(开源) | MIT | npm 依赖;其判定以 `botd: { bot, kind? }` 发送 | 客户端上报,仅暴露 |
+| 库                      | 许可证 | 复用方式                                         | 边界                          |
+| ----------------------- | ------ | ------------------------------------------------ | ----------------------------- |
+| **FingerprintJS**(开源) | MIT    | npm 依赖;其原始 `components` 被适配到封闭 schema | 丢弃其客户端 `visitorId` 哈希 |
+| **BotD**(开源)          | MIT    | npm 依赖;其判定以 `botd: { bot, kind? }` 发送    | 客户端上报,仅暴露             |
 
 一次 `collect()` 产出 `{ components, user_agent?, botd?, integrity? }`:
 
@@ -201,7 +201,7 @@ TypeScript,复用现有的 MIT 库:
   见 §5 的 `client_integrity`。
 
 `run()` 获取 challenge、采集、在 POST 前一刻写入 `ts` 并提交。浏览器端结果仅供展示
-(§5,*信任链*)。
+(§5,_信任链_)。
 
 ---
 
@@ -359,15 +359,15 @@ Req: { account_id: string, action: "daily_checkin", request_id: string }
 作用于 `POST /identify` 与 `POST /checkin/assess`,`CHALLENGE_RATE_LIMIT`
 (120 / 60 秒)作用于 `GET /challenge`,超出返回 `429`。
 
-| 状态码 | 场景 |
-|---|---|
-| `400` | 请求体任意位置出现未知键或类型错误的值;JSON 格式错误 |
-| `401` | `/identify`:nonce 错误、过期或复用,或 `ts` 超出窗口。密钥门控路由:缺少或错误的 bearer |
-| `404` | `/events`、`/checkin/assess`:未设置 `FP_API_KEY`,或 `request_id` 未知/已过期。`/visitor`:未设置 `FP_ADMIN_KEY` |
-| `408` | 原生:请求未在 `FP_REQUEST_TIMEOUT_SECS` 内得到响应 |
-| `409` | 边缘 `/checkin/assess`:`request_id` 已为另一个 `account_id` 评估过 |
-| `415` | `POST` 请求体不是 JSON |
-| `429` | 边缘:超出逐 IP 限流 |
+| 状态码 | 场景                                                                                                           |
+| ------ | -------------------------------------------------------------------------------------------------------------- |
+| `400`  | 请求体任意位置出现未知键或类型错误的值;JSON 格式错误                                                           |
+| `401`  | `/identify`:nonce 错误、过期或复用,或 `ts` 超出窗口。密钥门控路由:缺少或错误的 bearer                          |
+| `404`  | `/events`、`/checkin/assess`:未设置 `FP_API_KEY`,或 `request_id` 未知/已过期。`/visitor`:未设置 `FP_ADMIN_KEY` |
+| `408`  | 原生:请求未在 `FP_REQUEST_TIMEOUT_SECS` 内得到响应                                                             |
+| `409`  | 边缘 `/checkin/assess`:`request_id` 已为另一个 `account_id` 评估过                                             |
+| `415`  | `POST` 请求体不是 JSON                                                                                         |
+| `429`  | 边缘:超出逐 IP 限流                                                                                            |
 
 ---
 
@@ -437,15 +437,15 @@ Req: { account_id: string, action: "daily_checkin", request_id: string }
 客户端无需修改即可对接任一宿主;共享的一致性样例
 (`crates/fingerprintd/tests/fixtures/parity.json`)在两端都被断言。
 
-| 关注点 | 原生服务器(`crates/fingerprintd`,包 `fingerprintd-server`,二进制 `fingerprintd`) | 边缘 Worker(`apps/edge`,演示) |
-|---|---|---|
-| 运行时 | Axum / Tokio,常驻进程,收到 SIGTERM / Ctrl-C 时优雅停机 | Cloudflare Worker(Hono 宿主,按请求) |
-| Nonce 存储 | 内存,一次性 + TTL,有界 | `NONCE` Durable Object |
-| 指纹库 | 内存模糊存储,有界/可淘汰 | libSQL(默认)或 D1:`templates` + `blocking_index` |
-| 事件 | 内存,TTL + 上限 | `events` 表 |
-| 计算 | 原生 `fingerprintd` | 编译为 WASM 的 `fingerprintd`(`crates/fp-wasm`,不发布) |
-| 被动信号 | `trust_edge_headers` 之后的 Cloudflare 请求头(§4.2) | `request.cf` + `cf-connecting-ip`,外加 ASN 融合 |
-| 配置 | 默认值 ← `fingerprintd.toml` ← `FP_*` 环境变量 | Worker vars / secrets(`FP_SALT_SECRET` 必填) |
+| 关注点     | 原生服务器(`crates/fingerprintd`,包 `fingerprintd-server`,二进制 `fingerprintd`) | 边缘 Worker(`apps/edge`,演示)                          |
+| ---------- | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 运行时     | Axum / Tokio,常驻进程,收到 SIGTERM / Ctrl-C 时优雅停机                           | Cloudflare Worker(Hono 宿主,按请求)                    |
+| Nonce 存储 | 内存,一次性 + TTL,有界                                                           | `NONCE` Durable Object                                 |
+| 指纹库     | 内存模糊存储,有界/可淘汰                                                         | libSQL(默认)或 D1:`templates` + `blocking_index`       |
+| 事件       | 内存,TTL + 上限                                                                  | `events` 表                                            |
+| 计算       | 原生 `fingerprintd`                                                              | 编译为 WASM 的 `fingerprintd`(`crates/fp-wasm`,不发布) |
+| 被动信号   | `trust_edge_headers` 之后的 Cloudflare 请求头(§4.2)                              | `request.cf` + `cf-connecting-ip`,外加 ASN 融合        |
+| 配置       | 默认值 ← `fingerprintd.toml` ← `FP_*` 环境变量                                   | Worker vars / secrets(`FP_SALT_SECRET` 必填)           |
 
 原生存储是进程本地的,其盐按进程随机生成:重启会丢失所有模板并重新铸造设备。持久化部署见
 [`apps/edge`](apps/edge/README.md)。
@@ -472,19 +472,19 @@ identify → assess 流程。
 
 ## 9. 纵深防御控制
 
-| 控制 | 设置 | 默认值 |
-|---|---|---|
-| 一次性 nonce | `FP_NONCE_TTL_SECS` | 30 秒 |
-| 时间戳窗口(始终强制) | `FP_TS_SKEW_SECS` | ±30 秒 |
-| 信任 Cloudflare 被动信号请求头(原生) | `trust_edge_headers` / `FP_TRUST_EDGE_HEADERS` | `false`(fail-closed) |
-| 完整性 `noise` 置信度惩罚 | `integrity_penalty_enabled` / `FP_INTEGRITY_PENALTY_ENABLED` | `false`(显式开启;始终暴露) |
-| 事件 API + 签到 | `api_key` / `FP_API_KEY` | 未设置 ⇒ `404` |
-| 擦除 | `admin_key` / `FP_ADMIN_KEY` | 未设置 ⇒ `404` |
-| 保留期清扫 | `retention_secs` / `FP_RETENTION_SECS` | `0`(关闭);边缘配置随附 30 天 |
-| 请求截止时间(原生) | `FP_REQUEST_TIMEOUT_SECS` | 10 秒 ⇒ `408` |
-| 并发上限(原生) | `FP_MAX_CONCURRENT_REQUESTS` | 1024 |
-| 逐 IP 限流(边缘) | `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT` | 60 / 60 秒、120 / 60 秒 ⇒ `429` |
-| 有界存储(原生) | `FP_NONCE_MAX_LIVE`、`FP_EVENT_MAX`、`FP_FUZZY_MAX_*` | 见 §6 |
+| 控制                                 | 设置                                                         | 默认值                          |
+| ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
+| 一次性 nonce                         | `FP_NONCE_TTL_SECS`                                          | 30 秒                           |
+| 时间戳窗口(始终强制)                 | `FP_TS_SKEW_SECS`                                            | ±30 秒                          |
+| 信任 Cloudflare 被动信号请求头(原生) | `trust_edge_headers` / `FP_TRUST_EDGE_HEADERS`               | `false`(fail-closed)            |
+| 完整性 `noise` 置信度惩罚            | `integrity_penalty_enabled` / `FP_INTEGRITY_PENALTY_ENABLED` | `false`(显式开启;始终暴露)      |
+| 事件 API + 签到                      | `api_key` / `FP_API_KEY`                                     | 未设置 ⇒ `404`                  |
+| 擦除                                 | `admin_key` / `FP_ADMIN_KEY`                                 | 未设置 ⇒ `404`                  |
+| 保留期清扫                           | `retention_secs` / `FP_RETENTION_SECS`                       | `0`(关闭);边缘配置随附 30 天    |
+| 请求截止时间(原生)                   | `FP_REQUEST_TIMEOUT_SECS`                                    | 10 秒 ⇒ `408`                   |
+| 并发上限(原生)                       | `FP_MAX_CONCURRENT_REQUESTS`                                 | 1024                            |
+| 逐 IP 限流(边缘)                     | `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT`                        | 60 / 60 秒、120 / 60 秒 ⇒ `429` |
+| 有界存储(原生)                       | `FP_NONCE_MAX_LIVE`、`FP_EVENT_MAX`、`FP_FUZZY_MAX_*`        | 见 §6                           |
 
 密钥门控路由是 fail-closed 的:未设置或为空的密钥会禁用路由,bearer 以常数时间比较。
 密钥在调试输出中被脱敏。模板跳变防护与 review 不更新规则
@@ -531,26 +531,26 @@ schema 是封闭的:以下 18 个键(`crates/fp-core/src/fuzzy/component.rs` 中
 `COMPONENT_KEYS`)是 `components` 唯一接受的键;任何其他键都是 `400`。`null` 或缺失的键
 表示"未采集"。
 
-| 键 | 类型 | 稳定性 | `u_i` 先验 | 说明 |
-|---|---|---|---|---|
-| `webgl` | category | high | 0.05 | GPU vendor/renderer |
-| `webgl_extensions` | category | medium | 0.05 | 支持扩展的摘要 |
-| `platform` | category | high | 0.3 | `navigator.platform` |
-| `timezone` | category | high | 0.2 | IANA 名称 |
-| `languages` | category | high | 0.3 | 逗号拼接 |
-| `audio` | category | high | 0.05 | 音频栈渲染指纹 |
-| `canvas` | category | low | 0.02 | 驱动/浏览器升级时整体翻转;被隐私 / 反检测浏览器按会话加噪 |
-| `cpu_cores` | numeric | high | 0.3 | |
-| `device_memory` | numeric | high | 0.4 | GiB |
-| `screen` | category | medium | 0.1 | `"WxH"`,长边在前;外接显示器会改变它 |
-| `fonts` | set | medium | 0.05 | 增量变化 → Jaccard / MinHash |
-| `plugins` | set | medium | 0.3 | 插件名 |
-| `font_preferences` | category | medium | 0.1 | |
-| `screen_frame` | category | medium | 0.2 | 任务栏/程序坞内边距 |
-| `math` | category | medium | 0.5 | |
-| `touch_support` | category | medium | 0.5 | |
-| `dom_blockers` | category | medium | 0.5 | 内容拦截器检测 |
-| `user_agent_data` | category | medium | 0.05 | UA Client Hints 摘要 |
+| 键                 | 类型     | 稳定性 | `u_i` 先验 | 说明                                                      |
+| ------------------ | -------- | ------ | ---------- | --------------------------------------------------------- |
+| `webgl`            | category | high   | 0.05       | GPU vendor/renderer                                       |
+| `webgl_extensions` | category | medium | 0.05       | 支持扩展的摘要                                            |
+| `platform`         | category | high   | 0.3        | `navigator.platform`                                      |
+| `timezone`         | category | high   | 0.2        | IANA 名称                                                 |
+| `languages`        | category | high   | 0.3        | 逗号拼接                                                  |
+| `audio`            | category | high   | 0.05       | 音频栈渲染指纹                                            |
+| `canvas`           | category | low    | 0.02       | 驱动/浏览器升级时整体翻转;被隐私 / 反检测浏览器按会话加噪 |
+| `cpu_cores`        | numeric  | high   | 0.3        |                                                           |
+| `device_memory`    | numeric  | high   | 0.4        | GiB                                                       |
+| `screen`           | category | medium | 0.1        | `"WxH"`,长边在前;外接显示器会改变它                       |
+| `fonts`            | set      | medium | 0.05       | 增量变化 → Jaccard / MinHash                              |
+| `plugins`          | set      | medium | 0.3        | 插件名                                                    |
+| `font_preferences` | category | medium | 0.1        |                                                           |
+| `screen_frame`     | category | medium | 0.2        | 任务栏/程序坞内边距                                       |
+| `math`             | category | medium | 0.5        |                                                           |
+| `touch_support`    | category | medium | 0.5        |                                                           |
+| `dom_blockers`     | category | medium | 0.5        | 内容拦截器检测                                            |
+| `user_agent_data`  | category | medium | 0.05       | UA Client Hints 摘要                                      |
 
 `u_i` 先验是调参占位值(判断所得,非测量)。
 
@@ -745,15 +745,15 @@ missing (任一侧缺失): w_i = 0                             // 不比较、�
 
 ## 11. 数据结构与性能
 
-| 用途 | 结构 | 原生 | 边缘 |
-|---|---|---|---|
-| Blocking 倒排索引 | `key → set<visitor_id>` | 内存,单块上限 `FP_FUZZY_MAX_BLOCK`(1024) | `blocking_index` 表 |
-| MinHash-LSH | blocking 索引中的 band 键 | 16 个置换,8 个 band × 2 行 | 相同(以 `FP_SALT_SECRET` 为种子) |
-| 指纹库 | `visitor_id → record` | 当前模板 + 首次观测 + 新鲜度 + 时间戳 + 键;上限 `FP_FUZZY_MAX_RECORDS`(1 000 000),淘汰最旧 `last_seen`;可选 TTL | `templates` 表(当前模板 + 时间戳) |
-| 频率统计 | `(component, value hash) → count` + 逐分量总数 | 上限 `FP_FUZZY_MAX_FREQUENCY_VALUES`(1 000 000) | 每个请求从召回模板重建 |
-| 一致性统计 | `component → (agree, total)` | 上限 `FP_FUZZY_MAX_AGREEMENT_COMPONENTS`(1024) | 无(先验) |
-| 速度 | `ip → {visitor_id → last seen}` | 1 小时窗口,每 IP ≤ 64 个 id,≤ 1 000 000 个 IP | `VELOCITY` Durable Object |
-| 墓碑 | 已擦除的 `visitor_id` | FIFO,100 000 | `erased_visitors`,修剪至 100 000 |
+| 用途              | 结构                                           | 原生                                                                                                            | 边缘                              |
+| ----------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| Blocking 倒排索引 | `key → set<visitor_id>`                        | 内存,单块上限 `FP_FUZZY_MAX_BLOCK`(1024)                                                                        | `blocking_index` 表               |
+| MinHash-LSH       | blocking 索引中的 band 键                      | 16 个置换,8 个 band × 2 行                                                                                      | 相同(以 `FP_SALT_SECRET` 为种子)  |
+| 指纹库            | `visitor_id → record`                          | 当前模板 + 首次观测 + 新鲜度 + 时间戳 + 键;上限 `FP_FUZZY_MAX_RECORDS`(1 000 000),淘汰最旧 `last_seen`;可选 TTL | `templates` 表(当前模板 + 时间戳) |
+| 频率统计          | `(component, value hash) → count` + 逐分量总数 | 上限 `FP_FUZZY_MAX_FREQUENCY_VALUES`(1 000 000)                                                                 | 每个请求从召回模板重建            |
+| 一致性统计        | `component → (agree, total)`                   | 上限 `FP_FUZZY_MAX_AGREEMENT_COMPONENTS`(1024)                                                                  | 无(先验)                          |
+| 速度              | `ip → {visitor_id → last seen}`                | 1 小时窗口,每 IP ≤ 64 个 id,≤ 1 000 000 个 IP                                                                   | `VELOCITY` Durable Object         |
+| 墓碑              | 已擦除的 `visitor_id`                          | FIFO,100 000                                                                                                    | `erased_visitors`,修剪至 100 000  |
 
 每一次因上限导致的淘汰或丢弃都会计数,从不静默。性能:阶段一为 O(候选数);阶段二为
 O(候选数 × 常数个分量)。在原生服务器上,所有匹配状态位于一把读写锁之后:召回与打分在共享读锁
