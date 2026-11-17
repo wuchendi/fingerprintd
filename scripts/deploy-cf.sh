@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# deploy-cf.sh — build locally and deploy to Cloudflare (edge Worker / web Pages).
-# Mirrors .github/workflows/deploy-edge.yml + deploy-web.yml for a local run: it
-# rebuilds the vendored WASM from source, installs, builds, and deploys.
+# deploy-cf.sh — build locally and deploy the fingerprintd Worker to Cloudflare.
+# One Worker serves the API (apps/edge) and the playground (apps/web/dist, as
+# static assets). Mirrors .github/workflows/deploy.yml for a local run: it
+# rebuilds the vendored WASM from source, installs, builds the playground, and
+# deploys.
 #
 # Usage:
-#   scripts/deploy-cf.sh [edge|web|all]   # default: all
+#   scripts/deploy-cf.sh
 #
 # Env toggles:
-#   DRY_RUN=1       build + `wrangler deploy --dry-run` (edge) / build-only (web);
-#                   no upload, no Cloudflare account needed.
+#   DRY_RUN=1       build + `wrangler deploy --dry-run`; no upload, no
+#                   Cloudflare account needed.
 #   RUN_MIGRATIONS=1  apply the database migrations before the edge deploy:
 #                   libSQL when LIBSQL_URL (+ LIBSQL_AUTH_TOKEN) is set, else the
 #                   remote D1.
@@ -25,12 +27,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-TARGET="${1:-all}"
-case "$TARGET" in
-  edge | web | all) ;;
-  *) echo "usage: $0 [edge|web|all]" >&2; exit 2 ;;
-esac
 
 DRY="${DRY_RUN:-}"
 
@@ -54,41 +50,26 @@ wasm-pack build --target web --out-dir "$ROOT/apps/edge/wasm" crates/fp-wasm
 echo "==> install workspace deps (+ SDK prebuild via prepare)"
 bun install --frozen-lockfile
 
-deploy_edge() {
-  if [ -n "${RUN_MIGRATIONS:-}" ] && [ -z "$DRY" ]; then
-    if [ -n "${LIBSQL_URL:-}" ]; then
-      echo "==> [edge] apply libSQL migrations"
-      (cd apps/edge && DB_TYPE=libsql bun run db:migrate)
-    else
-      echo "==> [edge] apply remote D1 migrations"
-      (cd apps/edge && bun run cf:remotedb)
-    fi
-  fi
-  if [ -n "$DRY" ]; then
-    echo "==> [edge] dry-run (build only, no upload)"
-    (cd apps/edge && bun run deploy:dry)
+if [ -n "${RUN_MIGRATIONS:-}" ] && [ -z "$DRY" ]; then
+  if [ -n "${LIBSQL_URL:-}" ]; then
+    echo "==> apply libSQL migrations"
+    (cd apps/edge && DB_TYPE=libsql bun run db:migrate)
   else
-    echo "==> [edge] deploy (wrangler deploy --minify)"
-    (cd apps/edge && bun run deploy)
+    echo "==> apply remote D1 migrations"
+    (cd apps/edge && bun run cf:remotedb)
   fi
-}
+fi
 
-deploy_web() {
-  echo "==> [web] build SDK + app"
-  bun run --filter @cdlab/fingerprintd build
-  (cd apps/web && bun run build)
-  if [ -n "$DRY" ]; then
-    echo "==> [web] dry-run: build only (Cloudflare Pages has no dry-run) — skipping upload"
-  else
-    echo "==> [web] deploy (wrangler pages deploy)"
-    (cd apps/web && bun run deploy)
-  fi
-}
+echo "==> build SDK + playground (apps/web/dist, served as Worker assets)"
+bun run --filter @cdlab/fingerprintd build
+(cd apps/web && bun run build)
 
-case "$TARGET" in
-  edge) deploy_edge ;;
-  web) deploy_web ;;
-  all) deploy_edge; deploy_web ;;
-esac
+if [ -n "$DRY" ]; then
+  echo "==> dry-run (build only, no upload)"
+  (cd apps/edge && bun run deploy:dry)
+else
+  echo "==> deploy (wrangler deploy --minify)"
+  (cd apps/edge && bun run deploy)
+fi
 
-echo "==> Done ($TARGET)${DRY:+ [dry-run]}"
+echo "==> Done${DRY:+ [dry-run]}"

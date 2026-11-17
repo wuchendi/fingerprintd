@@ -292,18 +292,28 @@ SQLite-backed Durable Objects + D1 are on the Workers free plan.
    wrangler secret put FP_ADMIN_KEY     # optional — erasure
    ```
 
-4. **Deploy:** `bun run deploy` (`wrangler deploy --minify`). Validate offline
+4. **Deploy:** from the repo root, `bun run deploy` builds the SDK and the
+   playground, then runs `wrangler deploy --minify` here. Validate offline
    first with `bun run deploy:dry`.
 
-`scripts/deploy-cf.sh [edge|web|all]` runs the same flow locally (`DRY_RUN=1`
-for build-only, `RUN_MIGRATIONS=1` to migrate first).
+The Worker (`fingerprintd`) also serves the [playground](../web/README.md):
+`apps/web/dist` is bound as static assets, so the app and the API share one
+origin and the playground needs no CORS. `run_worker_first` in
+`wrangler.jsonc` lists the API paths that reach the Worker; every other path
+is an asset, with `index.html` as the fallback. Add a new route's path there.
+Build the playground before `deploy` / `deploy:dry` — both fail without
+`apps/web/dist`; the vitest suites do not need it.
+
+`scripts/deploy-cf.sh` runs the same flow locally, including the WASM build
+(`DRY_RUN=1` for build-only, `RUN_MIGRATIONS=1` to migrate first).
 
 ### CI deploy
 
-`.github/workflows/deploy-edge.yml` (manual `workflow_dispatch`) builds the WASM,
+`.github/workflows/deploy.yml` (manual `workflow_dispatch`) builds the WASM,
 optionally applies migrations (libSQL when the `LIBSQL_URL` secret is set, else
 D1), syncs the non-empty `FP_SALT_SECRET` / `FP_ADMIN_KEY` / `FP_API_KEY` /
-`LIBSQL_URL` / `LIBSQL_AUTH_TOKEN` GitHub secrets to the Worker, then deploys.
+`LIBSQL_URL` / `LIBSQL_AUTH_TOKEN` GitHub secrets to the Worker, then builds
+the playground and deploys.
 It needs the `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` repository secrets.
 
 ### Smoke test

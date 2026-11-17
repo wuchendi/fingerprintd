@@ -1,4 +1,0 @@
-# SPA history fallback for Cloudflare Pages: serve index.html (200, no redirect)
-# for any path that doesn't match a built asset. Vite copies this file from
-# public/ into dist/ at build time.
-/*  /index.html  200

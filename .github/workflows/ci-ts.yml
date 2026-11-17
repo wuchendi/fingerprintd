@@ -149,6 +149,13 @@ jobs:
         working-directory: apps/edge
         run: bun run test
 
+      # The Worker serves apps/web/dist as static assets; wrangler requires the
+      # directory, so build the SDK + playground before the dry-run.
+      - name: Build playground (Worker static assets)
+        run: |
+          bun run --filter @cdlab/fingerprintd build
+          bun run --filter @cdlab/fingerprintd-web build
+
       - name: Build (wrangler dry-run)
         working-directory: apps/edge
         run: bun run deploy:dry

@@ -119,12 +119,12 @@ One compute core ([`crates/fp-core`](crates/fp-core), compiled to WASM via [`cra
 - **Playground** — [`apps/web`](apps/web/README.md) drives the whole flow in a browser and visualizes what the client sends vs. what the server judges.
 - **Check-in risk decision** — the edge Worker also serves `POST /checkin/assess` (`{ account_id, action, request_id }`, `Authorization: Bearer <FP_API_KEY>`). It adds the account/device/IP/time aggregation fingerprintd deliberately doesn't hold and turns a stored identify event into an allow / challenge / deny decision for daily check-in anti-farming; the [playground](apps/web/README.md) demos it.
 
-CI deploys via the manual `deploy-edge` / `deploy-web` workflows. To deploy **from your machine** (rebuild WASM from source → build → push to Cloudflare), use `bun run deploy:cf [edge|web|all]` ([`scripts/deploy-cf.sh`](scripts/deploy-cf.sh)):
+The edge Worker and the playground ship as one Cloudflare Worker (`fingerprintd`): the Worker serves the built playground as static assets on the same origin as the API. CI deploys via the manual `deploy` workflow. To deploy **from your machine** (rebuild WASM from source → build → push to Cloudflare), use `bun run deploy:cf` ([`scripts/deploy-cf.sh`](scripts/deploy-cf.sh)):
 
 ```bash
-DRY_RUN=1 bun run deploy:cf edge   # build + wrangler dry-run, no account needed
-bun run deploy:cf all              # real deploy (wrangler login or CLOUDFLARE_API_TOKEN)
-RUN_MIGRATIONS=1 bun run deploy:cf edge   # apply database migrations first
+DRY_RUN=1 bun run deploy:cf        # build + wrangler dry-run, no account needed
+bun run deploy:cf                  # real deploy (wrangler login or CLOUDFLARE_API_TOKEN)
+RUN_MIGRATIONS=1 bun run deploy:cf # apply database migrations first
 ```
 
 Runtime Worker secrets are managed separately with `wrangler secret put`: `FP_SALT_SECRET` (required), `LIBSQL_URL` / `LIBSQL_AUTH_TOKEN` for the default libSQL database, and the optional `FP_API_KEY` / `FP_ADMIN_KEY`. Set `DB_TYPE=d1` to run on D1 instead. See [`apps/edge/README.md`](apps/edge/README.md#deploy) for the full configuration and deploy steps.

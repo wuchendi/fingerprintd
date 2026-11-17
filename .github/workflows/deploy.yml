@@ -1,7 +1,9 @@
-name: Deploy edge (Cloudflare)
+name: Deploy (Cloudflare)
 
 # Manual trigger only — deploying is explicit; CI (ci.yml) never auto-deploys.
 # Run from the Actions tab; database migrations are applied first by default.
+# Ships ONE Worker (`fingerprintd`): the apps/edge API plus the apps/web
+# playground, served from the same origin as Worker static assets.
 #
 # Required repository secrets (Settings → Secrets and variables → Actions):
 #   CLOUDFLARE_API_TOKEN   deploy auth for wrangler (Workers Scripts:Edit,
@@ -28,7 +30,7 @@ on:
         default: true
 
 concurrency:
-  group: deploy-edge
+  group: deploy
   cancel-in-progress: false
 
 permissions:
@@ -117,6 +119,7 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/edge-secrets.json"
 
-      - name: Deploy
-        working-directory: apps/edge
+      # Builds the SDK and the playground (apps/web/dist, the Worker's static
+      # assets), then deploys the Worker.
+      - name: Build and deploy
         run: bun run deploy
