@@ -55,16 +55,16 @@ structural flaws:
 
 - **Forgeable** — the id is computed on the client from client-controlled values.
 - **No replay protection** — a static id is captured once and resubmitted freely.
-- **Imprecise** — an exact client hash *avalanches*: any one component changing
+- **Imprecise** — an exact client hash _avalanches_: any one component changing
   makes the same device look new, while same-model devices collide.
 - **Weak against adversaries** — privacy browsers / anti-fingerprint extensions
   actively add noise.
 
-| Problem | Root cause | Direction |
-|---|---|---|
-| Forgeable | trusts client-reported values | cross-check with **passive signals the client cannot self-report** |
-| No replay protection | id is static | **one-time nonce** + a mandatory timestamp window |
-| Imprecise | exact client hash + avalanche | **server-side fuzzy matching + multi-source fusion** |
+| Problem              | Root cause                    | Direction                                                          |
+| -------------------- | ----------------------------- | ------------------------------------------------------------------ |
+| Forgeable            | trusts client-reported values | cross-check with **passive signals the client cannot self-report** |
+| No replay protection | id is static                  | **one-time nonce** + a mandatory timestamp window                  |
+| Imprecise            | exact client hash + avalanche | **server-side fuzzy matching + multi-source fusion**               |
 
 Judgment moves entirely server-side; the client only collects — the path
 FingerprintJS Pro / DataDome / Akamai all take.
@@ -80,11 +80,11 @@ agree with the network layer (bot detection)?
 
 ### Threat model
 
-| Adversary | Capability | System goal |
-|---|---|---|
-| **Script** | curl / scripts, no JS | must reject (no nonce / no collection / TLS mismatch) |
-| **Automation** | headless browser, runs JS, forges UA/JS values | catch via passive signals + consistency |
-| **Advanced** | curl-impersonate / uTLS forging JA3/JA4 + full stack, anti-detect browsers | **lower confidence + cross-verify**, not absolute blocking |
+| Adversary      | Capability                                                                 | System goal                                                |
+| -------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **Script**     | curl / scripts, no JS                                                      | must reject (no nonce / no collection / TLS mismatch)      |
+| **Automation** | headless browser, runs JS, forges UA/JS values                             | catch via passive signals + consistency                    |
+| **Advanced**   | curl-impersonate / uTLS forging JA3/JA4 + full stack, anti-detect browsers | **lower confidence + cross-verify**, not absolute blocking |
 
 No absolute defense is claimed. An advanced adversary can forge any single
 signal; the value is in **raising forgery cost** and **multi-signal consistency
@@ -109,13 +109,13 @@ detection**, not in being unbeatable.
 
 ## 3. Success metrics
 
-| Metric | Definition | Target |
-|---|---|---|
-| Stability rate | same device re-resolved to one `visitor_id` across visits over two weeks | ≥ 95% |
-| Collision rate | distinct devices resolved to one `visitor_id` | ≤ 1% |
-| Script/automation detection | scripted / forged requests flagged low-confidence | ≥ 90% |
-| Decision P99 | submit → `visitor_id` returned | ≤ 50ms |
-| Replay rejection | expired / reused nonce, or `ts` outside the window, refused | 100% |
+| Metric                      | Definition                                                               | Target |
+| --------------------------- | ------------------------------------------------------------------------ | ------ |
+| Stability rate              | same device re-resolved to one `visitor_id` across visits over two weeks | ≥ 95%  |
+| Collision rate              | distinct devices resolved to one `visitor_id`                            | ≤ 1%   |
+| Script/automation detection | scripted / forged requests flagged low-confidence                        | ≥ 90%  |
+| Decision P99                | submit → `visitor_id` returned                                           | ≤ 50ms |
+| Replay rejection            | expired / reused nonce, or `ts` outside the window, refused              | 100%   |
 
 > The stability/collision targets are gated behind an **offline evaluation against
 > a labelled corpus** — see [fuzzy-matching §10](#10-offline-evaluation). They must
@@ -209,10 +209,10 @@ The client only collects; judgment is server-side (§4). The SDK
 ([`packages/client`](packages/client/README.md), npm `@cdlab/fingerprintd`) is
 pure TypeScript and reuses existing MIT libraries:
 
-| Library | License | How reused | Boundary |
-|---|---|---|---|
-| **FingerprintJS** (OSS) | MIT | npm dependency; its raw `components` are adapted to the closed schema | its client-side `visitorId` hash is discarded |
-| **BotD** (OSS) | MIT | npm dependency; its verdict is sent as `botd: { bot, kind? }` | client-reported, surfaced only |
+| Library                 | License | How reused                                                            | Boundary                                      |
+| ----------------------- | ------- | --------------------------------------------------------------------- | --------------------------------------------- |
+| **FingerprintJS** (OSS) | MIT     | npm dependency; its raw `components` are adapted to the closed schema | its client-side `visitorId` hash is discarded |
+| **BotD** (OSS)          | MIT     | npm dependency; its verdict is sent as `botd: { bot, kind? }`         | client-reported, surfaced only                |
 
 One `collect()` produces `{ components, user_agent?, botd?, integrity? }`:
 
@@ -231,7 +231,7 @@ One `collect()` produces `{ components, user_agent?, botd?, integrity? }`:
   `audio`, `rect`), see `client_integrity` in §5.
 
 `run()` fetches the challenge, collects, stamps `ts` right before the POST, and
-submits. The browser-side result is display-only (§5, *Trust chain*).
+submits. The browser-side result is display-only (§5, _Trust chain_).
 
 ---
 
@@ -415,15 +415,15 @@ keyed on `cf-connecting-ip`: `RATE_LIMIT` (60 / 60 s) on `POST /identify` and
 `POST /checkin/assess`, `CHALLENGE_RATE_LIMIT` (120 / 60 s) on `GET /challenge`,
 answered with `429`.
 
-| Status | When |
-|---|---|
-| `400` | unknown key or wrongly-typed value anywhere in the body; malformed JSON |
-| `401` | `/identify`: bad, expired or reused nonce, or `ts` outside the window. Key-gated routes: missing or wrong bearer |
-| `404` | `/events`, `/checkin/assess`: `FP_API_KEY` unset, or unknown/expired `request_id`. `/visitor`: `FP_ADMIN_KEY` unset |
-| `408` | native: request not answered within `FP_REQUEST_TIMEOUT_SECS` |
-| `409` | edge `/checkin/assess`: `request_id` already assessed for a different `account_id` |
-| `415` | `POST` body not JSON |
-| `429` | edge: per-IP rate limit exceeded |
+| Status | When                                                                                                                |
+| ------ | ------------------------------------------------------------------------------------------------------------------- |
+| `400`  | unknown key or wrongly-typed value anywhere in the body; malformed JSON                                             |
+| `401`  | `/identify`: bad, expired or reused nonce, or `ts` outside the window. Key-gated routes: missing or wrong bearer    |
+| `404`  | `/events`, `/checkin/assess`: `FP_API_KEY` unset, or unknown/expired `request_id`. `/visitor`: `FP_ADMIN_KEY` unset |
+| `408`  | native: request not answered within `FP_REQUEST_TIMEOUT_SECS`                                                       |
+| `409`  | edge `/checkin/assess`: `request_id` already assessed for a different `account_id`                                  |
+| `415`  | `POST` body not JSON                                                                                                |
+| `429`  | edge: per-IP rate limit exceeded                                                                                    |
 
 ---
 
@@ -507,15 +507,15 @@ One engine ([`crates/fp-core`](crates/fp-core), the published `fingerprintd`
 crate), two hosts. A client works against either unchanged; a shared parity fixture
 (`crates/fingerprintd/tests/fixtures/parity.json`) is asserted on both.
 
-| Concern | Native server (`crates/fingerprintd`, package `fingerprintd-server`, binary `fingerprintd`) | Edge Worker (`apps/edge`, demo) |
-|---|---|---|
-| Runtime | Axum / Tokio, long-lived process, graceful shutdown on SIGTERM / Ctrl-C | Cloudflare Worker (Hono host, per-request) |
-| Nonce store | in memory, single-use + TTL, bounded | `NONCE` Durable Object |
-| Fingerprint library | in-memory fuzzy store, bounded/evicting | libSQL (default) or D1: `templates` + `blocking_index` |
-| Events | in-memory, TTL + cap | `events` table |
-| Compute | native `fingerprintd` | `fingerprintd` compiled to WASM (`crates/fp-wasm`, unpublished) |
-| Passive signals | Cloudflare headers behind `trust_edge_headers` (§4.2) | `request.cf` + `cf-connecting-ip`, plus the ASN fuse |
-| Configuration | defaults ← `fingerprintd.toml` ← `FP_*` env | Worker vars / secrets (`FP_SALT_SECRET` required) |
+| Concern             | Native server (`crates/fingerprintd`, package `fingerprintd-server`, binary `fingerprintd`) | Edge Worker (`apps/edge`, demo)                                 |
+| ------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Runtime             | Axum / Tokio, long-lived process, graceful shutdown on SIGTERM / Ctrl-C                     | Cloudflare Worker (Hono host, per-request)                      |
+| Nonce store         | in memory, single-use + TTL, bounded                                                        | `NONCE` Durable Object                                          |
+| Fingerprint library | in-memory fuzzy store, bounded/evicting                                                     | libSQL (default) or D1: `templates` + `blocking_index`          |
+| Events              | in-memory, TTL + cap                                                                        | `events` table                                                  |
+| Compute             | native `fingerprintd`                                                                       | `fingerprintd` compiled to WASM (`crates/fp-wasm`, unpublished) |
+| Passive signals     | Cloudflare headers behind `trust_edge_headers` (§4.2)                                       | `request.cf` + `cf-connecting-ip`, plus the ASN fuse            |
+| Configuration       | defaults ← `fingerprintd.toml` ← `FP_*` env                                                 | Worker vars / secrets (`FP_SALT_SECRET` required)               |
 
 The native store is process-local and its salt is random per process: a restart
 loses every template and re-mints devices. See [`apps/edge`](apps/edge/README.md)
@@ -538,8 +538,8 @@ for the persisted deployment.
 - **No first-observation snapshot.** `templates` keeps only the current drifted
   template.
 
-**Downstream consumers.** `visitor_id` + `confidence` + `signals` are inputs *for a
-risk engine*, not a verdict on their own — the core holds no account state and no
+**Downstream consumers.** `visitor_id` + `confidence` + `signals` are inputs _for a
+risk engine_, not a verdict on their own — the core holds no account state and no
 behavioural history (Non-goals, §2). A caller that needs an allow/challenge/deny
 decision layers that on top. The edge ships a reference example, `POST
 /checkin/assess` (§5): it joins a stored identify event with windowed
@@ -551,19 +551,19 @@ anti-farming. The [playground](apps/web/README.md) demos identify → assess.
 
 ## 9. Defense-in-depth controls
 
-| Control | Setting | Default |
-|---|---|---|
-| One-time nonce | `FP_NONCE_TTL_SECS` | 30 s |
-| Timestamp window (always enforced) | `FP_TS_SKEW_SECS` | ±30 s |
-| Trust Cloudflare passive-signal headers (native) | `trust_edge_headers` / `FP_TRUST_EDGE_HEADERS` | `false` (fail-closed) |
-| Integrity `noise` confidence penalty | `integrity_penalty_enabled` / `FP_INTEGRITY_PENALTY_ENABLED` | `false` (opt-in; always surfaced) |
-| Events API + check-in | `api_key` / `FP_API_KEY` | unset ⇒ `404` |
-| Erasure | `admin_key` / `FP_ADMIN_KEY` | unset ⇒ `404` |
-| Retention sweep | `retention_secs` / `FP_RETENTION_SECS` | `0` (off); edge config ships 30 days |
-| Request deadline (native) | `FP_REQUEST_TIMEOUT_SECS` | 10 s ⇒ `408` |
-| Concurrency cap (native) | `FP_MAX_CONCURRENT_REQUESTS` | 1024 |
-| Per-IP rate limits (edge) | `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT` | 60 / 60 s, 120 / 60 s ⇒ `429` |
-| Bounded stores (native) | `FP_NONCE_MAX_LIVE`, `FP_EVENT_MAX`, `FP_FUZZY_MAX_*` | see §6 |
+| Control                                          | Setting                                                      | Default                              |
+| ------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------ |
+| One-time nonce                                   | `FP_NONCE_TTL_SECS`                                          | 30 s                                 |
+| Timestamp window (always enforced)               | `FP_TS_SKEW_SECS`                                            | ±30 s                                |
+| Trust Cloudflare passive-signal headers (native) | `trust_edge_headers` / `FP_TRUST_EDGE_HEADERS`               | `false` (fail-closed)                |
+| Integrity `noise` confidence penalty             | `integrity_penalty_enabled` / `FP_INTEGRITY_PENALTY_ENABLED` | `false` (opt-in; always surfaced)    |
+| Events API + check-in                            | `api_key` / `FP_API_KEY`                                     | unset ⇒ `404`                        |
+| Erasure                                          | `admin_key` / `FP_ADMIN_KEY`                                 | unset ⇒ `404`                        |
+| Retention sweep                                  | `retention_secs` / `FP_RETENTION_SECS`                       | `0` (off); edge config ships 30 days |
+| Request deadline (native)                        | `FP_REQUEST_TIMEOUT_SECS`                                    | 10 s ⇒ `408`                         |
+| Concurrency cap (native)                         | `FP_MAX_CONCURRENT_REQUESTS`                                 | 1024                                 |
+| Per-IP rate limits (edge)                        | `RATE_LIMIT` / `CHALLENGE_RATE_LIMIT`                        | 60 / 60 s, 120 / 60 s ⇒ `429`        |
+| Bounded stores (native)                          | `FP_NONCE_MAX_LIVE`, `FP_EVENT_MAX`, `FP_FUZZY_MAX_*`        | see §6                               |
 
 Key-gated routes are fail-closed: an unset or empty key disables the route, and the
 bearer is compared in constant time. Keys are redacted from debug output. The
@@ -600,7 +600,7 @@ Two core decisions:
 1. **Two stages** — candidate generation (§4) → probabilistic scoring (§5).
 2. **Scoring uses the Fellegi–Sunter (FS) probabilistic record-linkage model** (§5)
    rather than a hand-tuned weighted average — FS's two parameters `m_i / u_i`
-   model *stability* and *distinctiveness* separately, aligning naturally with the
+   model _stability_ and _distinctiveness_ separately, aligning naturally with the
    two failure modes above.
 
 ---
@@ -618,26 +618,26 @@ The schema is closed: these 18 keys (`COMPONENT_KEYS` in
 `crates/fp-core/src/fuzzy/component.rs`) are the only accepted `components` keys;
 any other key is a `400`. A `null` or absent key means "not collected".
 
-| Key | Kind | Stability | `u_i` prior | Notes |
-|---|---|---|---|---|
-| `webgl` | category | high | 0.05 | GPU vendor/renderer |
-| `webgl_extensions` | category | medium | 0.05 | digest of supported extensions |
-| `platform` | category | high | 0.3 | `navigator.platform` |
-| `timezone` | category | high | 0.2 | IANA name |
-| `languages` | category | high | 0.3 | comma-joined |
-| `audio` | category | high | 0.05 | audio-stack render fingerprint |
-| `canvas` | category | low | 0.02 | flips on driver/browser upgrade; noised per session by privacy / anti-detect browsers |
-| `cpu_cores` | numeric | high | 0.3 | |
-| `device_memory` | numeric | high | 0.4 | GiB |
-| `screen` | category | medium | 0.1 | `"WxH"`, longer side first; an external display changes it |
-| `fonts` | set | medium | 0.05 | incremental change → Jaccard / MinHash |
-| `plugins` | set | medium | 0.3 | plugin names |
-| `font_preferences` | category | medium | 0.1 | |
-| `screen_frame` | category | medium | 0.2 | taskbar/dock insets |
-| `math` | category | medium | 0.5 | |
-| `touch_support` | category | medium | 0.5 | |
-| `dom_blockers` | category | medium | 0.5 | content-blocker detection |
-| `user_agent_data` | category | medium | 0.05 | UA Client Hints digest |
+| Key                | Kind     | Stability | `u_i` prior | Notes                                                                                 |
+| ------------------ | -------- | --------- | ----------- | ------------------------------------------------------------------------------------- |
+| `webgl`            | category | high      | 0.05        | GPU vendor/renderer                                                                   |
+| `webgl_extensions` | category | medium    | 0.05        | digest of supported extensions                                                        |
+| `platform`         | category | high      | 0.3         | `navigator.platform`                                                                  |
+| `timezone`         | category | high      | 0.2         | IANA name                                                                             |
+| `languages`        | category | high      | 0.3         | comma-joined                                                                          |
+| `audio`            | category | high      | 0.05        | audio-stack render fingerprint                                                        |
+| `canvas`           | category | low       | 0.02        | flips on driver/browser upgrade; noised per session by privacy / anti-detect browsers |
+| `cpu_cores`        | numeric  | high      | 0.3         |                                                                                       |
+| `device_memory`    | numeric  | high      | 0.4         | GiB                                                                                   |
+| `screen`           | category | medium    | 0.1         | `"WxH"`, longer side first; an external display changes it                            |
+| `fonts`            | set      | medium    | 0.05        | incremental change → Jaccard / MinHash                                                |
+| `plugins`          | set      | medium    | 0.3         | plugin names                                                                          |
+| `font_preferences` | category | medium    | 0.1         |                                                                                       |
+| `screen_frame`     | category | medium    | 0.2         | taskbar/dock insets                                                                   |
+| `math`             | category | medium    | 0.5         |                                                                                       |
+| `touch_support`    | category | medium    | 0.5         |                                                                                       |
+| `dom_blockers`     | category | medium    | 0.5         | content-blocker detection                                                             |
+| `user_agent_data`  | category | medium    | 0.05        | UA Client Hints digest                                                                |
 
 The `u_i` priors are tuning placeholders (judgement, not measured).
 
@@ -878,15 +878,15 @@ Proving the architecture §3 targets requires a labelled evaluation set first:
 
 ## 11. Data structures and performance
 
-| Use | Structure | Native | Edge |
-|---|---|---|---|
-| Blocking inverted index | `key → set<visitor_id>` | in memory, per-block cap `FP_FUZZY_MAX_BLOCK` (1024) | `blocking_index` table |
-| MinHash-LSH | band keys in the blocking index | 16 permutations, 8 bands × 2 rows | same (seeded from `FP_SALT_SECRET`) |
-| Fingerprint library | `visitor_id → record` | current template + first observation + freshness + timestamps + keys; cap `FP_FUZZY_MAX_RECORDS` (1 000 000), oldest `last_seen` evicted; optional TTL | `templates` table (current template + timestamps) |
-| Frequency stats | `(component, value hash) → count` + per-component total | cap `FP_FUZZY_MAX_FREQUENCY_VALUES` (1 000 000) | rebuilt per request from recalled templates |
-| Agreement stats | `component → (agree, total)` | cap `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` (1024) | none (priors) |
-| Velocity | `ip → {visitor_id → last seen}` | 1-hour window, ≤ 64 ids per IP, ≤ 1 000 000 IPs | `VELOCITY` Durable Object |
-| Tombstones | erased `visitor_id`s | FIFO, 100 000 | `erased_visitors`, trimmed to 100 000 |
+| Use                     | Structure                                               | Native                                                                                                                                                 | Edge                                              |
+| ----------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
+| Blocking inverted index | `key → set<visitor_id>`                                 | in memory, per-block cap `FP_FUZZY_MAX_BLOCK` (1024)                                                                                                   | `blocking_index` table                            |
+| MinHash-LSH             | band keys in the blocking index                         | 16 permutations, 8 bands × 2 rows                                                                                                                      | same (seeded from `FP_SALT_SECRET`)               |
+| Fingerprint library     | `visitor_id → record`                                   | current template + first observation + freshness + timestamps + keys; cap `FP_FUZZY_MAX_RECORDS` (1 000 000), oldest `last_seen` evicted; optional TTL | `templates` table (current template + timestamps) |
+| Frequency stats         | `(component, value hash) → count` + per-component total | cap `FP_FUZZY_MAX_FREQUENCY_VALUES` (1 000 000)                                                                                                        | rebuilt per request from recalled templates       |
+| Agreement stats         | `component → (agree, total)`                            | cap `FP_FUZZY_MAX_AGREEMENT_COMPONENTS` (1024)                                                                                                         | none (priors)                                     |
+| Velocity                | `ip → {visitor_id → last seen}`                         | 1-hour window, ≤ 64 ids per IP, ≤ 1 000 000 IPs                                                                                                        | `VELOCITY` Durable Object                         |
+| Tombstones              | erased `visitor_id`s                                    | FIFO, 100 000                                                                                                                                          | `erased_visitors`, trimmed to 100 000             |
 
 Every cap-driven eviction or drop is counted, never silent. Performance: stage one is
 O(candidates); stage two is O(candidates × constant components). On the native
